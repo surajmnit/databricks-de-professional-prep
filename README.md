@@ -76,8 +76,8 @@ Each day covers specific exam objectives from the official July 3, 2026 Exam Gui
 
 - [ ] Day 1 — Exam Strategy + Architecture + Spark Basics
 - [x] Day 2 — Python Dev + Declarative Automation Bundles
-- [ ] Day 3 — SQL Transformations + Testing
-- [ ] Day 4 — Spark Architecture Deep-Dive
+- [x] Day 3 — SQL Transformations + Testing
+- [x] Day 4 — Spark Architecture Deep-Dive
 - [ ] Day 5 — Spark Execution: DAG, Stages, Tasks
 - [ ] Day 6 — Spark Shuffle
 - [ ] Day 7 — Spark Memory + OOM

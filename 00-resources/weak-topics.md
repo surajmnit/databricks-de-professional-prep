@@ -113,3 +113,43 @@
 | Q8 | run vs import | Medium | run merges global scope; proper packages prevent namespace conflicts |
 | Q9 | DAB path validation | Medium | Bundle deploy writes path as-is; no existence check |
 | Q10 | UDF optimization | Medium | SQL > Pandas UDF > Python UDF; always check if SQL suffices first |
+
+
+---
+
+## Day 3 Quiz Analysis
+
+| Q# | Topic | Priority | Key Insight |
+|---|---|---|---|
+| Q1 | ROWS vs RANGE with duplicates | Medium | Same result here; differ when ORDER BY values differ slightly |
+| Q2 | ROW_NUMBER deduplication | High | Only ROW_NUMBER guarantees 1 row per partition; RANK/DENSE_RANK allow ties |
+| Q3 | LEFT SEMI vs LEFT ANTI | Low | SEMI=exists in right; ANTI=does NOT exist in right |
+| Q4 | LAST_VALUE default frame | High | Default frame returns current row for every row; need ROWS UNBOUNDED FOLLOWING |
+| Q5 | Broadcast join target | Low | Broadcast SMALL table only; large table broadcast causes OOM |
+| Q6 | DataFrame.transform() | Low | .transform() is the exam-relevant API; .pipe() is RDD-based |
+| Q7 | assertDataFrameEqual order | High | Order-sensitive by default; need checkRowOrder=False |
+| Q8 | ROLLUP vs CUBE vs GROUPING SETS | Medium | ROLLUP= hierarchical; CUBE=all combos; GROUPING SETS=explicit |
+| Q9 | Join ordering / early filter | Medium | Filter before join reduces join volume |
+| Q10 | PIVOT vs UNPIVOT | Medium | PIVOT=rows to cols; UNPIVOT=cols to rows |
+| Q11 | Skew join / salted join | High | AQE handles automatically; manual fix is salted join |
+| Q12 | Control flow in pipelines | Medium | Classic jobs=Python if/else; Lakeflow=declarative operators |
+
+
+---
+
+## Day 4 Quiz Analysis
+
+| Q# | Topic | Priority | Key Insight |
+|---|---|---|---|
+| Q1 | Job/Stage/Task hierarchy | Medium | Read+filter=same Stage; groupBy=new Stage; 1 action=1 Job |
+| Q2 | Narrow vs wide transformations | Low | filter=narrow (no Stage); join/repartition/sort=wide (new Stage) |
+| Q3 | Driver OOM from collect() | High | Check spark.driver.maxResultSize |
+| Q4 | Shuffle map stage task count | Hard | Task count = input partition count, not shuffle partition count |
+| Q5 | Executor heartbeat/loss | Medium | 3 missed heartbeats (30s) marks executor lost |
+| Q6 | coalesce cannot increase | Low | No-op when n > current; returns current count |
+| Q7 | Data skew signature | High | One executor 100%, others idle = skew |
+| Q8 | executor.cores concurrency | Low | cores x executors = total concurrent tasks |
+| Q9 | Dynamic allocation max | Low | maxExecutors is the ceiling |
+| Q10 | Lost task = executor failure | Hard | Lost task messages come from executors, not driver |
+| Q11 | Shuffle partition sizing | Hard | TB / partitions = partition size; 1TB/50 = 20GB = OOM |
+| Q12 | stage.maxAttempts vs task.maxFailures | Medium | Stage retries all tasks; task retries individual task |

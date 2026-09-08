@@ -160,3 +160,47 @@
 | Cluster-scoped library | Library installed on all cluster nodes; required for UDF access | 2 |
 | DAB --force flag | Overwrites existing resources during databricks bundle deploy | 2 |
 | Py4J serialization | Row-by-row serialization used by Python UDFs; slower than Arrow | 2 |
+
+
+---
+
+## Day 3 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Window function | SQL function over row set via OVER clause; does not collapse rows | 3 |
+| ROWS vs RANGE | ROWS=physical row count; RANGE=logical value grouping; differ with duplicates | 3 |
+| LEFT SEMI join | Left rows where key exists in right; equivalent to IN subquery | 3 |
+| LEFT ANTI join | Left rows where key does NOT exist in right; equivalent to NOT IN | 3 |
+| Broadcast join | Small table sent to all executors; avoids shuffle | 3 |
+| GROUPING SETS | Multiple aggregation levels in one query | 3 |
+| ROLLUP | Hierarchical subtotals: (a,b) > (a) > grand total | 3 |
+| CUBE | All combinations: (a,b) > (a) > (b) > grand total | 3 |
+| PIVOT | Rotate rows to columns | 3 |
+| UNPIVOT | Rotate columns to rows (LATERAL VIEW EXPLODE MAP) | 3 |
+| DataFrame.transform | Chainable transformation method; each function independently testable | 3 |
+| assertDataFrameEqual | Spark built-in order-independent DataFrame comparison (checkRowOrder=False) | 3 |
+| assertSchemaEqual | Spark built-in schema comparison | 3 |
+| Salted join | Handle skewed joins by replicating rows with salt keys | 3 |
+| checkRowOrder | Parameter for assertDataFrameEqual; True=order-sensitive, False=order-independent | 3 |
+
+
+---
+
+## Day 4 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| SparkContext | Entry point to Spark; runs on driver; builds DAG; schedules tasks | 4 |
+| Stage | Set of tasks with no shuffle boundary between them | 4 |
+| Task | Smallest unit of work; one per partition | 4 |
+| Shuffle boundary | Network data movement between stages; creates new Stage | 4 |
+| Narrow transformation | No shuffle (filter, withColumn, select) | 4 |
+| Wide transformation | Requires shuffle (groupBy, join, repartition, sort, distinct) | 4 |
+| Spark UI | Driver-hosted web UI at driver:4040; shows Jobs/Stages/Tasks | 4 |
+| spark.sql.shuffle.partitions | Default partition count for shuffle operations (200) | 4 |
+| spark.executor.heartbeatInterval | Frequency of executor heartbeats to driver (default 10s) | 4 |
+| spark.stage.maxAttempts | Max retries per stage (default 4) | 4 |
+| spark.driver.maxResultSize | Max size of collect() result at driver (default 1GB) | 4 |
+| Data skew | Uneven partition distribution; one partition dominates | 4 |
+| Dynamic allocation | Auto add/remove executors based on workload | 4 |
