@@ -204,3 +204,105 @@
 | spark.driver.maxResultSize | Max size of collect() result at driver (default 1GB) | 4 |
 | Data skew | Uneven partition distribution; one partition dominates | 4 |
 | Dynamic allocation | Auto add/remove executors based on workload | 4 |
+
+
+---
+
+## Day 5 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Lazy evaluation | Transformations recorded but not executed until Action | 5 |
+| Action | Operation that triggers Spark execution (collect, count, write, etc.) | 5 |
+| Transformation | Operation that builds the DAG (filter, groupBy, etc.) | 5 |
+| Catalyst Optimizer | Spark query planning engine; transforms logical to physical plan | 5 |
+| Physical plan | How Spark will execute the query (operators, order) | 5 |
+| Exchange | Shuffle operator in physical plan = new Stage boundary | 5 |
+| Whole-stage codegen | Collapses operators into one generated function;  prefix | 5 |
+| BroadcastExchange | Shuffle operator for small table broadcast | 5 |
+| SortMergeJoin | Default join strategy for large tables | 5 |
+| Column pruning | Catalyst removes unused columns from read | 5 |
+| Predicate pushdown | Catalyst moves filters closer to data source | 5 |
+| Filter pushdown | Filter conditions applied at scan time, not post-scan | 5 |
+| HashAggregate | Hash-based aggregation (used for groupBy when applicable) | 5 |
+| SortAggregate | Sort-based aggregation (used when hash not applicable) | 5 |
+
+
+---
+
+## Day 6 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Shuffle | Data movement between executors; most expensive Spark operation | 6 |
+| Shuffle write | Map stage output written to local disk before reduce stage | 6 |
+| Shuffle read | Reduce stage reads shuffle output from map task files | 6 |
+| Exchange | Physical plan operator representing shuffle boundary | 6 |
+| HashPartitioner | Default partitioner for groupBy; keys distributed by hash | 6 |
+| RangePartitioner | Used for sort; distributes by range boundaries | 6 |
+| Shuffle spill | Data written to disk because executor memory insufficient for sort | 6 |
+| Local read | Reduce task reads shuffle data from same executor (no network) | 6 |
+| Remote read | Reduce task reads shuffle data from other executors (network cost) | 6 |
+| BroadcastHashJoin | Join using broadcast table; no shuffle on large table | 6 |
+| SortMergeJoin | Default join for large tables; shuffle on both sides | 6 |
+| AQE skew join | Auto-splits skewed partitions into smaller sub-partitions | 6 |
+| autoBroadcastJoinThreshold | Max table size for auto-broadcast (default 10MB) | 6 |
+| Salted join | Technique to handle skew: replicate small table rows by salt key | 6 |
+| Shuffle partition count | spark.sql.shuffle.partitions (default 200); controls reduce parallelism | 6 |
+
+
+---
+
+## Day 7 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Execution Memory | Portion of Spark memory for shuffle sort, hash join, aggregation buffers | 7 |
+| Storage Memory | Portion of Spark memory for cached DataFrames and broadcast variables | 7 |
+| Unified Memory | Spark 1.6+ model where execution and storage share a pool; execution cannot evict storage | 7 |
+| Shuffle Spill | Data written to disk when execution memory is insufficient | 7 |
+| Python Worker Process | Separate subprocess for Python UDFs; memory from spark.python.worker.memory | 7 |
+| MEMORY_AND_DISK | Cache level: memory first, spill to disk if needed | 7 |
+| MEMORY_ONLY | Cache level: memory only, recompute if evicted | 7 |
+| MEMORY_ONLY_SER | Cache level: serialized in memory, less memory but more CPU | 7 |
+| LRU Eviction | Storage memory evicts least recently used cached data when full | 7 |
+| GC Pressure | Excessive garbage collection pauses from too many short-lived objects | 7 |
+| spark.memory.fraction | Fraction of executor heap for Spark (default 0.6) | 7 |
+| spark.python.worker.memory | Per-worker Python subprocess heap (default 512MB) | 7 |
+| spark.driver.maxResultSize | Max size for collect() results at driver (default 1GB) | 7 |
+| SparkStorageLevel | Enum controlling cache persistence: MEMORY_ONLY, MEMORY_AND_DISK, etc. | 7 |
+
+---
+
+## Day 7 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Unified memory | Execution and storage share a pool; execution can evict storage | 7 |
+| Execution memory | Memory for shuffles, sorts, joins, hash aggregation | 7 |
+| Storage memory | Memory for cache, broadcasts | 7 |
+| Shuffle spill | Data written to disk because executor memory insufficient for sort/agg | 7 |
+| Python worker memory | Off-heap memory for Python UDF subprocess (spark.python.worker.memory) | 7 |
+| spark.driver.maxResultSize | Max size of collect() result at driver (default 1GB) | 7 |
+| spark.memory.fraction | Fraction of executor heap for execution+storage (0.6) | 7 |
+| spark.memory.storageFraction | Fraction of memory fraction for storage (0.5) | 7 |
+| GC pressure | Frequent GC pauses affecting executor performance | 7 |
+| Arrow | Columnar format for JVM-to-Python data transfer; used by Pandas UDFs | 7 |
+| Cache bloat | Executor OOM from cached data filling storage memory, starving execution | 7 |
+| unpersist() | Explicitly frees cached DataFrame memory | 7 |
+
+
+---
+
+## Day 20 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Delta Sharing | Open protocol for sharing live Delta tables with any platform | 20 |
+| D2D Sharing | Databricks-to-Databricks sharing via Unity Catalog | 20 |
+| D2O Sharing | Databricks-to-Other sharing via open REST protocol | 20 |
+| OPEN Recipient | Delta Sharing recipient for non-Databricks platforms | 20 |
+| Account Recipient | Delta Sharing recipient for Databricks workspaces | 20 |
+| Lakehouse Federation | Query external databases from Databricks via Unity Catalog | 20 |
+| External Connection | Unity Catalog object with credentials to external DB | 20 |
+| Federated Query | Query executed on source DB; only results returned | 20 |
