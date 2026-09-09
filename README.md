@@ -91,7 +91,7 @@ Each day covers specific exam objectives from the official July 3, 2026 Exam Gui
 - [ ] Day 15 — Lakeflow Declarative Pipelines
 - [ ] Day 16 — Streaming Tables vs Materialized Views
 - [ ] Day 17 — Data Transformation + Cleansing
-- [ ] Day 18 — Unity Catalog ACLs + Permissions
+- [x] Day 18 — Unity Catalog ACLs + Permissions
 - [ ] Day 19 — Security + Compliance + PII
 - [x] Day 20 — Delta Sharing + Lakehouse Federation
 - [ ] Day 21 — Monitoring: System Tables
