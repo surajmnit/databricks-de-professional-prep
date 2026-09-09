@@ -2,78 +2,74 @@
 
 **Objective coverage:** Section 7 (10%) and Section 8 (7%)
 
+> ⚠️ **Correction notice:** several questions in an earlier draft tested `DENY` as if it were a valid Unity Catalog precedence mechanism, used the invalid privilege name `USAGE`, referenced a `SHOW GRANTS FOR <principal>` syntax that doesn't exist, described fabricated "system-defined roles," and named the wrong audit system table. All of these have been corrected below against current Databricks documentation. If you've already drilled the old versions of Q3, Q5, Q8, Q9, Q10, or Q14, re-do them here.
+
 ---
 
 ## Question 1
-
 **Objective:** Understand the Unity Catalog three-level hierarchy.
 
-A data analyst is granted SELECT on `prod.sales.customers` (table level). They can read that table. Can they also read `prod.sales.orders` (a different table in the same schema)?
+A data analyst is granted `SELECT` on `prod.sales.customers` (table level) only. Can they also read `prod.sales.orders`, a different table in the same schema?
 
-A. Yes, because USAGE on the schema is inherited from any table-level grant
-B. Yes, because the analyst is in the same schema and schema-level grants flow up
-C. No, because table-level grants do not flow up to schema or to sibling tables
-D. No, because SELECT on one table blocks access to all other tables in the schema
+A. Yes, because `USE SCHEMA` is implicitly inherited from any table-level grant
+B. Yes, because schema-level access flows upward from table grants
+C. No — table-level grants do not flow up to the schema or sideways to sibling tables
+D. No — `SELECT` on one table blocks access to all other tables in the schema
 
 ---
 
 ## Question 2
+**Objective:** Apply catalog-level grants correctly for least privilege.
 
-**Objective:** Apply catalog-level grants correctly.
+A data engineer needs read access to every table in `prod` and write access limited to `prod.etl`. Which grant set is correct?
 
-A data engineer needs to read all tables in `prod` and write to `prod.etl`. Which grant set is correct for the service account?
-
-A. `GRANT ALL PRIVILEGES ON CATALOG prod TO service-principal:etl`
-B. `GRANT SELECT, MODIFY ON CATALOG prod TO service-principal:etl`
-C. `GRANT SELECT ON CATALOG prod TO service-principal:etl; GRANT MODIFY ON SCHEMA prod.etl TO service-principal:etl`
-D. `GRANT USAGE ON SCHEMA prod.etl TO service-principal:etl`
+A. `GRANT ALL PRIVILEGES ON CATALOG prod TO etl_sp;`
+B. `GRANT SELECT, MODIFY ON CATALOG prod TO etl_sp;`
+C. `GRANT USE CATALOG ON CATALOG prod TO etl_sp; GRANT USE SCHEMA, SELECT ON CATALOG prod TO etl_sp; GRANT USE SCHEMA, MODIFY ON SCHEMA prod.etl TO etl_sp;`
+D. `GRANT USE SCHEMA ON SCHEMA prod.etl TO etl_sp;`
 
 ---
 
 ## Question 3
+**Objective:** Understand how Unity Catalog handles restricting a subset of a broad grant.
 
-**Objective:** Understand DENY precedence.
+A group `all_employees` has `SELECT` granted at the catalog level on `prod` (with the necessary `USE CATALOG`/`USE SCHEMA` also granted). Leadership wants this group to be unable to read the single table `prod.hr.salaries`, while keeping their access to everything else in `prod`. What should the team do?
 
-A user is in two groups: `analysts` (granted SELECT on `prod`) and `restricted_team` (DENIED SELECT on `prod.hr.salaries`). What happens when the user queries `prod.hr.salaries`?
-
-A. The user can read `prod.hr.salaries` because the GROUP grant is broader
-B. The user can read `prod.hr.salaries` because DENY only applies to the user directly, not through groups
-C. The user is blocked from reading `prod.hr.salaries` because DENY wins over any GRANT
-D. The query fails because conflicting DENY and GRANT from groups causes an error
+A. Run `DENY SELECT ON TABLE prod.hr.salaries TO all_employees;`
+B. Restructure so `prod.hr` is never included in the broad grant to `all_employees` (i.e., grant `all_employees` only the specific schemas they should see, not the whole catalog), or apply a row filter/column mask on the sensitive table
+C. Run `REVOKE SELECT ON TABLE prod.hr.salaries FROM all_employees;` even though it was never explicitly granted at the table level
+D. Rename `prod.hr.salaries` so the group can't find it in Catalog Explorer
 
 ---
 
 ## Question 4
+**Objective:** Apply the least-privilege principle to a read-only role.
 
-**Objective:** Apply least-privilege principle.
-
-A team of business analysts needs to view data only — no write access. Which privilege is most appropriate?
+A team of business analysts needs to view data only — no write access. Which privilege should they be granted on the relevant tables/schemas?
 
 A. `MODIFY` — allows reading and writing
 B. `SELECT` — read-only access
-C. `USAGE` — access to traverse the hierarchy
-D. `BROWSE` — list objects without reading data
+C. `USE SCHEMA` — access to traverse into the schema
+D. `BROWSE` — list objects without reading their data
 
 ---
 
 ## Question 5
+**Objective:** Understand the full traversal requirement for accessing a table.
 
-**Objective:** Understand USAGE requirement in the hierarchy.
+A user has `GRANT SELECT ON SCHEMA prod.sales TO analyst;` only. When they run `SELECT * FROM prod.sales.customers`, they get an access-denied error. What is most likely missing?
 
-A user has explicit `GRANT SELECT ON SCHEMA prod.sales TO analyst`. When they run `SELECT * FROM prod.sales.customers`, they get an access denied error. What is missing?
-
-A. SELECT on the table `prod.sales.customers`
-B. USAGE on the schema `prod.sales`
-C. USAGE on the catalog `prod`
-D. Both USAGE on catalog `prod` AND USAGE on schema `prod.sales`
+A. `SELECT` on the table `prod.sales.customers` specifically
+B. `USE SCHEMA` on `prod.sales`
+C. `USE CATALOG` on `prod`
+D. Both `USE CATALOG` on `prod` and `USE SCHEMA` on `prod.sales`
 
 ---
 
 ## Question 6
-
 **Objective:** Distinguish workspace ACLs from Unity Catalog ACLs.
 
-Which object type is managed by Unity Catalog ACLs (GRANT/REVOKE SQL commands)?
+Which object type is governed by Unity Catalog's `GRANT`/`REVOKE` SQL commands rather than workspace-level permissions?
 
 A. Notebooks
 B. MLflow experiments (legacy)
@@ -83,304 +79,238 @@ D. Job definitions
 ---
 
 ## Question 7
+**Objective:** Configure service principal access following least privilege.
 
-**Objective:** Configure service principal access correctly.
+A production pipeline needs to read every table in `prod` and create new tables only in `prod.staging`. Which grant set is correct and minimal?
 
-A pipeline needs to read data from all `prod` tables and create new tables only in `prod.staging`. Which set of grants follows least privilege?
-
-A. `GRANT SELECT ON CATALOG prod TO pipeline_sp; GRANT CREATE TABLE ON SCHEMA prod.staging TO pipeline_sp`
-B. `GRANT ALL PRIVILEGES ON CATALOG prod TO pipeline_sp`
-C. `GRANT SELECT ON SCHEMA prod.staging TO pipeline_sp; GRANT CREATE TABLE ON SCHEMA prod.staging TO pipeline_sp`
-D. `GRANT USAGE ON CATALOG prod TO pipeline_sp; GRANT MODIFY ON CATALOG prod TO pipeline_sp`
+A. `GRANT USE CATALOG ON CATALOG prod TO pipeline_sp; GRANT USE SCHEMA, SELECT ON CATALOG prod TO pipeline_sp; GRANT USE SCHEMA, CREATE TABLE ON SCHEMA prod.staging TO pipeline_sp;`
+B. `GRANT ALL PRIVILEGES ON CATALOG prod TO pipeline_sp;`
+C. `GRANT USE SCHEMA, SELECT, CREATE TABLE ON SCHEMA prod.staging TO pipeline_sp;` (nothing else)
+D. `GRANT USE CATALOG, MODIFY ON CATALOG prod TO pipeline_sp;`
 
 ---
 
 ## Question 8
+**Objective:** Understand inheritance in the absence of any deny mechanism.
 
-**Objective:** Demonstrate understanding of permission inheritance.
+A group is granted `SELECT ON CATALOG prod` (with the required `USE CATALOG`/`USE SCHEMA` also granted). No other grants or restrictions of any kind exist for this group. What is their effective access to `prod.finance.salaries`?
 
-A group is granted `SELECT ON CATALOG prod`. The security team then grants `DENY SELECT ON TABLE prod.finance.salaries TO the same group`. What is the effective permission on `prod.finance.salaries`?
-
-A. Full SELECT access (catalog-level grant overrides table-level DENY)
-B. No access (table-level DENY overrides catalog-level grant)
-C. MODIFY access only (DENY blocks SELECT but not MODIFY)
-D. USAGE only (DENY removes all table-level access)
+A. Full `SELECT` access — the catalog-level grant cascades down, and Unity Catalog has no mechanism to override it downward except restructuring the grant itself
+B. No access, because sensitive tables are automatically excluded from catalog-level grants
+C. `MODIFY` access only
+D. Access depends on whether a `DENY` was separately issued
 
 ---
 
 ## Question 9
+**Objective:** Use `SHOW GRANTS` correctly.
 
-**Objective:** Use SHOW GRANTS correctly for auditing.
+An auditor wants to see what privileges `alice@example.com` has been granted on the `prod.sales` schema specifically. Which command is syntactically correct?
 
-An auditor wants to see all permissions granted to `user:alice@example.com` across all objects. Which command returns the complete list?
-
-A. `SHOW GRANTS ON CATALOG prod FOR alice@example.com`
-B. `SHOW GRANTS FOR alice@example.com`
-C. `SHOW CATALOGS FOR alice@example.com`
-D. `SHOW PERMISSIONS alice@example.com`
+A. `SHOW GRANTS FOR alice@example.com;`
+B. `` SHOW GRANTS `alice@example.com` ON SCHEMA prod.sales; ``
+C. `SHOW PERMISSIONS alice@example.com ON prod.sales;`
+D. `SHOW CATALOGS FOR alice@example.com;`
 
 ---
 
 ## Question 10
+**Objective:** Understand ownership vs. delegated management vs. broad privilege grants.
 
-**Objective:** Understand system-defined roles.
+A user is granted the `MANAGE` privilege on a schema. What does this allow them to do, and what does it NOT automatically give them?
 
-Which system role grants USAGE on all catalogs and schemas and full CREATE/USE permissions but NOT read access by default?
-
-A. `metastore-admin`
-B. `catalog-owner`
-C. `schema-owner`
-D. `table-owner`
+A. `MANAGE` makes them the owner of the schema, including the ability to drop it
+B. `MANAGE` lets them grant and revoke privileges on the schema, but does not by itself give them data-access privileges like `SELECT` — they would need to grant that to themselves separately
+C. `MANAGE` is identical to `ALL PRIVILEGES`
+D. `MANAGE` only applies to workspace objects, not Unity Catalog securables
 
 ---
 
 ## Question 11
+**Objective:** Apply ACLs to secure external locations (raw cloud storage).
 
-**Objective:** Apply ACLs to secure external locations.
+A security policy requires that only the ETL team can read/write a specific S3 landing bucket, and no one else should have any access to it. What's the correct approach?
 
-A security policy requires that only the ETL team can write to the S3 landing bucket, and no one else can access it. Which Unity Catalog object should be used and how should it be configured?
-
-A. Create an external schema and grant USAGE on it to etl_group only
-B. Create an external location bound to a credential, and grant READ FILES + WRITE FILES on the external location to etl_group only
-C. Create a managed table and grant MODIFY to etl_group
-D. Create a volume and grant ALL PRIVILEGES to etl_group
+A. Create an external schema and grant `USE SCHEMA` on it to `etl_group` only
+B. Create an external location bound to a storage credential, and grant `READ FILES`, `WRITE FILES` on that external location to `etl_group` only
+C. Create a managed table over the bucket and grant `MODIFY` to `etl_group`
+D. Create a volume and grant `ALL PRIVILEGES` to `etl_group`
 
 ---
 
 ## Question 12
+**Objective:** Distinguish `ALL PRIVILEGES` from ownership.
 
-**Objective:** Distinguish ALL PRIVILEGES from OWNERSHIP.
+A user is granted `ALL PRIVILEGES ON TABLE prod.sales.orders`. Can they transfer ownership of that table to another user?
 
-A user is granted `ALL PRIVILEGES ON TABLE prod.sales`. Can they transfer ownership of that table to another user?
-
-A. Yes, ALL PRIVILEGES includes the ability to transfer ownership
-B. No, OWNERSHIP is a separate privilege and must be explicitly granted
-C. Yes, but only if the user is also a metastore-admin
-D. Only if the table was created by the user (creator = owner)
+A. Yes — `ALL PRIVILEGES` includes the ability to transfer ownership
+B. No — ownership is a distinct, per-object attribute; only the current owner (or someone with sufficient admin rights) can transfer it
+C. Yes, but only if they are also a metastore admin
+D. Only if they originally created the table
 
 ---
 
 ## Question 13
+**Objective:** Understand cross-workspace data access limitations.
 
-**Objective:** Understand cross-workspace permission limitations.
+A user in Workspace A needs governed, read-only access to a table that physically lives in a metastore attached to Workspace B. Workspace-level ACLs only apply within a single workspace. What Unity Catalog feature is designed for this?
 
-A user in workspace A needs to access a table in workspace B. Workspace-level ACLs are used for workspace objects. Which Unity Catalog feature enables cross-workspace data access?
-
-A. GRANT SELECT across workspaces using workspace names
-B. Delta Sharing (D2D) with a recipient configuration
-C. External tables pointing to shared S3 buckets
-D. Service principals created in each workspace
+A. A `GRANT SELECT` statement that names the remote workspace directly
+B. Delta Sharing (Databricks-to-Databricks) with a recipient/share configuration
+C. An external table pointing at Workspace B's underlying cloud storage path
+D. Creating a duplicate service principal in Workspace B
 
 ---
 
 ## Question 14
+**Objective:** Use system tables to audit permission changes.
 
-**Objective:** Audit ACL changes using system tables.
+A compliance team needs to review every Unity Catalog permission change (grants and revokes) from the last 30 days. Which system table should they query?
 
-A compliance team needs to track all permission changes (GRANT/DENY/REVOKE) in the last 30 days. Which system table or view contains this information?
-
-A. `system.default.access_logs`
+A. `system.access.audit` (filtering `service_name = 'unityCatalog'` and `action_name = 'updatePermissions'`)
 B. `system.default.audit_logs`
-C. `information_schema.table_privileges`
+C. `information_schema.table_privileges` (shows current state only, not history)
 D. `system.metadata.permissions_history`
 
 ---
 
 ## Question 15
+**Objective:** Apply the correct privilege for invoking a Unity Catalog function/UDF.
 
-**Objective:** Apply the correct privilege for a specific use case.
+A data scientist needs to call a Python UDF registered in Unity Catalog. What privilege do they need on the function itself (separate from any privileges on tables it might touch internally)?
 
-A data scientist needs to run a Python UDF that aggregates data. The UDF is registered in Unity Catalog. What privilege should be granted?
-
-A. `SELECT` on the table used by the UDF
-B. `EXECUTE` on the function/UDF
-C. `USAGE` on the catalog containing the function
-D. `MODIFY` on the table so the UDF can write results
+A. `SELECT` on the function
+B. `EXECUTE` on the function
+C. `USE CATALOG` on the catalog containing the function (alone, with nothing else)
+D. `MODIFY` on the function
 
 ---
 
 ## Question 16
-
 **Objective:** Add metadata for data discoverability.
 
-A data steward wants to document a table `prod.hr.salaries` so that analysts can understand its purpose, source system, and refresh cadence without asking the data team. Which command adds this description at the table level?
+A data steward wants to document `prod.hr.salaries` so analysts understand its purpose and refresh cadence without asking the data team. Which command adds a table-level description?
 
-A. `CREATE COMMENT ON TABLE prod.hr.salaries AS 'HR salaries — updated weekly'`
-B. `ALTER TABLE prod.hr.salaries SET COMMENT 'HR salaries — source Workday, updated every Monday'`
-C. `ADD LABEL TO TABLE prod.hr.salaries DESCRIPTION 'HR salaries — updated weekly'`
-D. `UPDATE information_schema.tables SET comment WHERE table_name = 'salaries'`
+A. `CREATE COMMENT ON TABLE prod.hr.salaries AS '...';` (not valid syntax)
+B. `ALTER TABLE prod.hr.salaries SET COMMENT 'HR salaries — source Workday, refreshed every Monday';`
+C. `ADD LABEL TO TABLE prod.hr.salaries DESCRIPTION '...';` (not valid syntax)
+D. `UPDATE information_schema.tables SET comment = '...' WHERE table_name = 'salaries';` (information_schema is read-only)
 
 ---
 
 ## Question 17
+**Objective:** Use `information_schema` for governance discovery.
 
-**Objective:** Use information_schema for data discovery.
+A governance team wants every column across `prod` that is missing a description. Which query is correct?
 
-A governance team wants to find all tables in `prod` that are missing column-level descriptions. Which query is correct?
-
-A. `SELECT table_name FROM information_schema.tables WHERE table_catalog = 'prod' AND comment IS NULL`
-B. `SELECT table_name, column_name FROM information_schema.columns WHERE table_catalog = 'prod' AND column.comment IS NULL`
-C. `SELECT * FROM information_schema.tables WHERE comment IS NULL AND table_schema = 'prod'`
-D. `SELECT table_name FROM information_schema.column_tags WHERE tag_name = 'description' AND tag_value IS NULL`
+A. `SELECT table_name FROM prod.information_schema.tables WHERE comment IS NULL;` (table-level only, not column-level)
+B. `SELECT table_name, column_name FROM prod.information_schema.columns WHERE comment IS NULL;`
+C. `SELECT * FROM prod.information_schema.tables WHERE comment IS NULL;` (same issue as A)
+D. `SELECT table_name FROM prod.information_schema.column_tags WHERE tag_name = 'description' AND tag_value IS NULL;` (tags ≠ comments, and this table doesn't track descriptions)
 
 ---
 
 ## Question 18
+**Objective:** Understand metadata behavior under cloning operations.
 
-**Objective:** Understand tag behavior with cloning operations.
+A data engineer runs `DEEP CLONE` on `prod.sales.customers` (tagged `pii=true`) into a staging table for testing. After the clone, the new table shows no tags. What's the most accurate explanation?
 
-A data engineer clones a table using DEEP CLONE for a staging environment. The original table has PII tags set (`pii=true`, `gdpr=personal`). After cloning, the tags are no longer present on the cloned table. Which statement is most accurate?
+A. The tags were set incorrectly — tags should survive `DEEP CLONE`
+B. Tags (and comments) are intentionally not carried over by `DEEP CLONE` or `CTAS` — only structure/data is copied, and metadata must be reapplied explicitly
+C. The tags survived but aren't visible from the schema the clone landed in
+D. `DEEP CLONE` doesn't support tagged source tables at all
 
-A. Tags were not set correctly — tags should survive deep cloning
-B. Tags are intentionally NOT preserved by DEEP CLONE — they must be reapplied after cloning
-C. Tags survived but are not visible in the staging workspace's information_schema
-D. Deep cloning is not supported for tagged tables
+---
+
+## Question 19
+**Objective:** Understand the two independent ACL planes.
+
+A user has "Can Manage" workspace permission on a notebook, but running it produces a Unity Catalog access-denied error on a `SELECT` against `prod.sales.customers`. What does this tell you?
+
+A. "Can Manage" should have been sufficient — this indicates a bug
+B. Workspace ACLs (governing the notebook) and Unity Catalog ACLs (governing the table) are independent; fixing the notebook permission won't fix the missing table grant
+C. The notebook needs to be re-attached to a different cluster
+D. Workspace admins automatically override Unity Catalog grants, so this shouldn't be possible
 
 ---
 
 ## Answer Key
 
-### Q1: C — No, because table-level grants do not flow up to schema or to sibling tables
-
-Unity Catalog inheritance flows top-down (catalog → schema → table). A table-level grant does not propagate up to the schema or sideways to sibling tables. The analyst would need explicit grants on each table they need to access.
-
-**Why others are wrong:** A/B (inheritance wrong direction) — grants flow from parent to child, not child to parent or sibling. D (blocks all other tables) — each table has independent grants.
-
----
-
-### Q2: C — Grant SELECT on catalog; grant MODIFY on schema for write access
-
-Least privilege: SELECT on catalog gives read access to all tables. MODIFY (INSERT/UPDATE/DELETE) on `prod.etl` schema restricts write operations to that specific schema. This is the correct least-privilege configuration.
-
-**Why others are wrong:** A = too broad (ALL PRIVILEGES). B = MODIFY on catalog is too broad for writes. D = USAGE alone does not allow data reading.
-
----
-
-### Q3: C — The user is blocked from reading because DENY wins over any GRANT
-
-DENY takes precedence over GRANT regardless of where the DENY originates. If any group the user belongs to has a DENY for a privilege, that DENY wins even if another group has a GRANT for the same privilege.
-
-**Why others are wrong:** A = DENY does not lose to GROUP grants. B = DENY through groups still applies. D = no conflict error — DENY simply wins.
-
----
-
-### Q4: B — SELECT — read-only access
-
-SELECT grants the ability to read data without modification rights. This is the appropriate least-privilege permission for business analysts who only need to view data.
-
-**Why others are wrong:** A = MODIFY allows writes (violates least privilege). C = USAGE allows traversal but not reading. D = BROWSE allows listing objects but not reading data.
-
----
-
-### Q5: D — Both USAGE on catalog AND USAGE on schema
-
-The user needs USAGE on `prod` (catalog) to enter the catalog, AND USAGE on `prod.sales` (schema) to enter the schema. Even with SELECT on the schema, without catalog USAGE the user cannot traverse to the schema. Without schema USAGE, they cannot traverse to the table.
-
-**Why others are wrong:** A (SELECT on table) — the error occurs before reaching the table level. B/C (only one level) — both catalog and schema USAGE are required for traversal.
-
----
-
-### Q6: C — Delta tables registered in Unity Catalog
-
-Delta tables, schemas, and catalogs are managed by Unity Catalog and use GRANT/REVOKE SQL. Notebooks, MLflow experiments (legacy), and job definitions use workspace-level permissions.
-
-**Why others are wrong:** A (notebooks) — workspace permissions. B (MLflow) — workspace permissions (legacy). D (jobs) — workspace permissions.
-
----
-
-### Q7: A — SELECT on catalog + CREATE TABLE on staging schema
-
-Least privilege: SELECT on catalog gives read access everywhere. CREATE TABLE on staging schema limits table creation to staging only. This satisfies both requirements with minimal scope.
-
-**Why others are wrong:** B (ALL PRIVILEGES on catalog) — too broad. C (only SELECT on staging) — prevents reading other prod tables. D (USAGE + MODIFY on catalog) — MODIFY on catalog is too broad.
-
----
-
-### Q8: B — No access (table-level DENY overrides catalog-level GRANT)
-
-DENY always wins. The catalog-level grant gives SELECT on all tables including `prod.finance.salaries`, but the table-level DENY explicitly blocks SELECT on that table. The DENY takes precedence.
-
-**Why others are wrong:** A = catalog-level grant does not override explicit table-level DENY. C/D = DENY blocks SELECT specifically; it does not reduce the permission to a different level.
-
----
-
-### Q9: B — SHOW GRANTS FOR alice@example.com
-
-`SHOW GRANTS FOR <principal>` lists all granted (and denied) privileges for that user or group across all securables in the account.
-
-**Why others are wrong:** A = wrong syntax (no FOR clause on SHOW GRANTS ON). C = SHOW CATALOGS does not take a principal. D = no such command in Unity Catalog.
-
----
-
-### Q10: C — schema-owner
-
-`schema-owner` grants USAGE on all catalogs and schemas and full CREATE/USE permissions within schemas. It does not grant SELECT by default (that's the owner's implicit right to read their own schema tables).
-
-**Why others are wrong:** A (metastore-admin) = full access to everything. B (catalog-owner) = USAGE + CREATE on catalog and children. D (table-owner) = USAGE + CREATE on owning schema.
-
----
-
-### Q11: B — Create an external location bound to a credential, grant READ FILES + WRITE FILES on the external location to etl_group only
-
-External locations bind storage paths to Unity Catalog credentials. Granting READ FILES + WRITE FILES on the external location restricts access to that bucket to etl_group only. This is the correct least-privilege pattern for securing raw storage.
-
-**Why others are wrong:** A (external schema) — schema grants do not control raw storage access. C (managed table) — wrong mechanism. D (volume) — volumes are for structured file access, not raw bucket control.
-
----
-
-### Q12: B — No, OWNERSHIP is a separate privilege
-
-ALL PRIVILEGES grants all data-level privileges (SELECT, MODIFY, CREATE, etc.) but OWNERSHIP is a separate, object-level privilege. To transfer ownership, you must explicitly grant `OWNERSHIP ON <object> TO <principal>`.
-
-**Why others are wrong:** A = OWNERSHIP is not included in ALL PRIVILEGES. C = metastore-admin is not required. D = creator does not automatically equal owner in UC.
-
----
-
-### Q13: B — Delta Sharing (D2D) with a recipient configuration
-
-Delta Sharing D2D allows one Databricks workspace to share data with another Databricks workspace. Workspace-level ACLs cannot grant cross-workspace table access.
-
-**Why others are wrong:** A = no GRANT syntax supports cross-workspace references. C = external tables in one workspace point to that workspace's storage, not another workspace's tables. D = service principals are workspace-local.
-
----
-
-### Q14: A — system.default.access_logs
-
-The `system.default.access_logs` table (or `system.access.audit` depending on workspace config) records all access and permission change events including GRANT, DENY, and REVOKE operations.
-
-**Why others are wrong:** B = no standard `audit_logs` table. C = information_schema only shows current grants, not change history. D = no standard `permissions_history` table.
-
----
-
-### Q15: B — EXECUTE on the function/UDF
-
-To run a Unity Catalog function or UDF, the user needs EXECUTE privilege on the function itself (not the underlying tables). This follows the principle of least privilege — the user can call the function without needing direct table access.
-
-**Why others are wrong:** A (SELECT on table) — not required if the function handles access. C (USAGE on catalog) — does not grant function execution. D (MODIFY) — UDFs read by default, MODIFY is unnecessary and too broad.
-
----
-
-### Q16: B — ALTER TABLE prod.hr.salaries SET COMMENT '...'
-
-`ALTER TABLE ... SET COMMENT` is the correct syntax for adding a table-level description in Unity Catalog. This comment is visible via DESCRIBE, in the Catalog Explorer UI, and in information_schema.tables.comment.
-
-**Why others are wrong:** A — no `CREATE COMMENT` syntax in Unity Catalog. C — no `ADD LABEL` syntax. D — information_schema tables are read-only; you cannot UPDATE them directly.
-
----
-
-### Q17: B — SELECT ... FROM information_schema.columns WHERE ... AND column.comment IS NULL
-
-The `information_schema.columns` view exposes the `comment` column for column-level descriptions. To find columns without descriptions, check `column.comment IS NULL` against the `information_schema.columns` view.
-
-**Why others are wrong:** A — `information_schema.tables.comment` is the table-level comment, not column-level. C — `comment IS NULL` on `information_schema.tables` checks the table comment, not column comments. D — there is no `information_schema.column_tags` view in standard Unity Catalog.
-
----
-
-### Q18: B — Tags are intentionally NOT preserved by DEEP CLONE — they must be reapplied after cloning
-
-Tags are not copied by DEEP CLONE or CTAS. The cloned table is a new object with no metadata. This is a known behavior and a common governance gap. Tags and comments must be reapplied programmatically after cloning.
-
-**Why others are wrong:** A — tags do NOT survive cloning by design. C — tags are not hidden; they are absent. D — deep cloning tagged tables is fully supported; tags are simply not copied.
+### Q1: C
+Inheritance flows top-down only (catalog → schema → table); a table-level grant never propagates up to the schema or sideways to sibling tables. The analyst needs an explicit grant on `orders` too.
+**Wrong options:** A/B assume upward inheritance, which doesn't exist. D is false — each table's grants are independent; one grant doesn't block others.
+
+### Q2: C
+Full traversal + read (`USE CATALOG`, `USE SCHEMA`, `SELECT` at catalog level) plus scoped write (`USE SCHEMA`, `MODIFY` on `prod.etl` only) is both correct syntax and minimal scope.
+**Wrong options:** A is far too broad. B grants catalog-wide `MODIFY`, which lets the engineer write anywhere in `prod`, not just `etl` — violates least privilege. D omits `USE CATALOG` and any read/write privilege entirely — non-functional.
+
+### Q3: B
+Since Unity Catalog has no `DENY`, the only ways to exclude one table from an otherwise-broad grant are structural (don't include that schema in the broad grant to begin with) or row filters/column masks at the data layer.
+**Wrong options:** A doesn't work — `DENY` isn't supported on UC objects. C is nonsensical (revoking something never granted does nothing useful and doesn't create a restriction). D is security-by-obscurity, not an access control.
+
+### Q4: B
+`SELECT` is exactly read access with no write capability — the correct least-privilege grant for a view-only role.
+**Wrong options:** A grants write too (`MODIFY`). C only allows traversal, not reading data. D only allows listing objects, not reading their contents.
+
+### Q5: D
+Both `USE CATALOG` on `prod` and `USE SCHEMA` on `prod.sales` are required before the `SELECT` on the schema (which does cascade to the table) can take effect — without traversal rights at both levels above, the query fails before it can even reach the table.
+**Wrong options:** A is wrong because the schema-level `SELECT` already covers the table once traversal works. B/C are each individually necessary but not sufficient alone — both are required together.
+
+### Q6: C
+Tables (and catalogs, schemas, views, volumes, functions, models) registered in Unity Catalog use `GRANT`/`REVOKE` SQL. Notebooks, legacy MLflow experiments, and job definitions all use workspace-level permissions instead.
+**Wrong options:** A, B, D are all workspace-ACL-governed objects.
+
+### Q7: A
+Full-catalog read plus schema-scoped create/write in staging is the minimal correct set.
+**Wrong options:** B is far too broad (write access everywhere in `prod`). C omits catalog-wide read entirely — the pipeline couldn't read tables outside staging. D grants catalog-wide `MODIFY`, again too broad.
+
+### Q8: A
+With no deny mechanism in Unity Catalog and no other restriction in place, the catalog-level `SELECT` grant simply applies — the group can read `prod.finance.salaries` along with everything else in `prod`. This is precisely why the "no DENY" fact matters operationally: broad grants really do apply broadly unless you design your schema/catalog boundaries to prevent it up front.
+**Wrong options:** B assumes an automatic sensitivity-based carve-out that doesn't exist. C misunderstands what `SELECT` vs. `MODIFY` control. D references a mechanism (`DENY`) that doesn't apply to Unity Catalog objects.
+
+### Q9: B
+`SHOW GRANTS [principal] ON <securable_object>` is the actual syntax — the object is required, and the principal (in backticks) is optional and scopes the result to that principal on that object.
+**Wrong options:** A has no such bare "FOR" form for account-wide results. C isn't a real Databricks SQL statement. D is nonsensical — `SHOW CATALOGS` doesn't take a principal argument.
+
+### Q10: B
+`MANAGE` is a delegated-administration privilege — it lets the holder grant/revoke privileges on the object, but it does not itself confer `SELECT`/`MODIFY`/etc.; a `MANAGE` holder who wants data access must explicitly grant it to themselves.
+**Wrong options:** A conflates `MANAGE` with ownership — they're different. C is false; `MANAGE` is not part of `ALL PRIVILEGES` in current UC (in fact `ALL PRIVILEGES` explicitly excludes `MANAGE`, `EXTERNAL USE SCHEMA`, and `EXTERNAL USE LOCATION` to prevent privilege escalation). D is false — `MANAGE` is very much a Unity Catalog concept.
+
+### Q11: B
+External locations bind a storage path to a credential; granting `READ FILES`/`WRITE FILES` on the named external location — not the raw bucket path — is the governed, least-privilege pattern.
+**Wrong options:** A — "external schema" isn't the right construct for raw storage access control. C — wrapping in a managed table doesn't control the underlying bucket the way an external location does. D — volumes are for managed/external file access within the catalog, a different (though related) construct from external-location-level bucket access.
+
+### Q12: B
+Ownership is tracked as a distinct, per-object attribute independent of `ALL PRIVILEGES`; only the current owner (or an admin with sufficient rights) can transfer it via an explicit ownership-transfer action.
+**Wrong options:** A overstates what `ALL PRIVILEGES` includes. C is unnecessary — ownership transfer doesn't require being a metastore admin if you're already the owner. D is false in general — the *creator* does become the initial owner, but that's a different fact from what `ALL PRIVILEGES` grants a *different* user.
+
+### Q13: B
+Delta Sharing (Databricks-to-Databricks) is purpose-built for securely sharing live data across metastores/workspaces/organizations via shares and recipients (Day 20 covers this in depth).
+**Wrong options:** A — no such cross-workspace `GRANT` target exists. C — pointing at the same storage doesn't give you Unity Catalog-governed access control or auditability. D — duplicating a service principal doesn't solve cross-metastore data governance.
+
+### Q14: A
+`system.access.audit` is the real, documented audit log system table; permission changes appear there under `service_name = 'unityCatalog'` with action names like `updatePermissions`.
+**Wrong options:** B, D name system tables that don't exist. C shows only the current grant state, not a history of changes over time.
+
+### Q15: B
+`EXECUTE` is the specific privilege required to invoke a Unity Catalog function/UDF — this exists precisely so callers don't need direct access to whatever tables the function touches internally.
+**Wrong options:** A — `SELECT` isn't a valid/necessary privilege on a function object for this purpose. C — catalog-level `USE CATALOG` alone doesn't grant the ability to execute anything within it. D — `MODIFY` is a table-write privilege, unrelated to invoking a function.
+
+### Q16: B
+`ALTER TABLE ... SET COMMENT '...'` is the correct, valid syntax for a table-level description, visible via `DESCRIBE`, Catalog Explorer, and `information_schema.tables.comment`.
+**Wrong options:** A and C are not valid Databricks SQL syntax. D is invalid — `information_schema` views are read-only; you alter metadata via `ALTER`/`COMMENT ON`, not `UPDATE`.
+
+### Q17: B
+`information_schema.columns` exposes column-level `comment`; filtering `WHERE comment IS NULL` there finds columns lacking descriptions.
+**Wrong options:** A and C check `information_schema.tables.comment`, which is table-level, not column-level. D references a table that doesn't track descriptions this way.
+
+### Q18: B
+Tags and comments are not copied by `DEEP CLONE` or `CTAS` — only the table's structure and data are copied. This is by design, not a bug, and is a real governance gap teams need to guard against by reapplying metadata as part of any cloning pipeline step.
+**Wrong options:** A is factually backwards. C is incorrect — the tags are genuinely absent, not merely hidden. D is false — cloning tagged tables works fine; it's the tags specifically that don't transfer.
+
+### Q19: B
+Workspace ACLs (governing notebooks/jobs/clusters) and Unity Catalog ACLs (governing tables/schemas/catalogs) are two fully independent security planes. A user can have maximal permission on one and none on the other.
+**Wrong options:** A misdiagnoses this as a bug — it's expected, correct behavior. C is an unrelated, irrelevant fix. D is false — admins aren't automatically exempt from UC checks just by virtue of a workspace-level role (only actual metastore/account admins bypass UC checks, which is a different thing from workspace "Can Manage").
 
 ---
 
@@ -388,21 +318,22 @@ Tags are not copied by DEEP CLONE or CTAS. The cloned table is a new object with
 
 | Q# | Difficulty | Topic |
 |---|---|---|
-| 1 | Medium | Hierarchy: table grants do not flow to siblings |
-| 2 | Medium | Least-privilege service account grants |
-| 3 | Hard | DENY precedence over GRANT from groups |
-| 4 | Easy | SELECT = read-only for analysts |
-| 5 | Hard | Both catalog AND schema USAGE required |
-| 6 | Easy | UC ACL vs workspace ACL scope |
+| 1 | Medium | Hierarchy: table grants don't flow to siblings |
+| 2 | Medium | Least-privilege catalog + scoped-schema grants |
+| 3 | Hard | No `DENY` in UC — structural/row-filter alternative |
+| 4 | Easy | `SELECT` = read-only |
+| 5 | Hard | Full traversal chain (`USE CATALOG` + `USE SCHEMA`) required |
+| 6 | Easy | UC ACL vs. workspace ACL scope |
 | 7 | Medium | Least-privilege pipeline grants |
-| 8 | Hard | DENY overrides inherited GRANT |
-| 9 | Easy | SHOW GRANTS FOR command syntax |
-| 10 | Medium | System-defined roles and their scope |
+| 8 | Hard | Broad grants apply broadly — no automatic sensitive-data carve-out |
+| 9 | Medium | Correct `SHOW GRANTS` syntax |
+| 10 | Medium | `MANAGE` vs. ownership vs. `ALL PRIVILEGES` |
 | 11 | Medium | External location security |
-| 12 | Medium | ALL PRIVILEGES vs OWNERSHIP |
+| 12 | Medium | `ALL PRIVILEGES` vs. ownership |
 | 13 | Hard | Cross-workspace access via Delta Sharing |
-| 14 | Medium | System tables for ACL audit |
-| 15 | Medium | EXECUTE privilege for UDFs |
-| 16 | Easy | ALTER TABLE SET COMMENT syntax |
-| 17 | Medium | information_schema.columns for column descriptions |
-| 18 | Medium | Tags not preserved by DEEP CLONE |
+| 14 | Medium | `system.access.audit` for permission-change history |
+| 15 | Medium | `EXECUTE` privilege for functions/UDFs |
+| 16 | Easy | `ALTER TABLE ... SET COMMENT` syntax |
+| 17 | Medium | `information_schema.columns` for column-level gaps |
+| 18 | Medium | Tags/comments not preserved by `DEEP CLONE`/CTAS |
+| 19 | Easy | Two independent ACL planes |

@@ -2,483 +2,305 @@
 
 ## Exam Objectives (Exam Guide, July 2026)
 
-This day maps to **Section 7: Ensuring Data Security and Compliance (10%)** and **Section 8: Data Governance (7%)**:
-
-- "Use ACLs to secure Workspace Objects, enforcing the principle of least privilege, including enforcing principles like least privilege, policy enforcement."
+Maps to **Section 7: Ensuring Data Security and Compliance (10%)** and **Section 8: Data Governance (7%)**:
+- "Use ACLs to secure Workspace Objects, enforcing the principle of least privilege, including policy enforcement."
 - "Demonstrate understanding of Unity Catalog permission inheritance model."
 - "Create and add descriptions/metadata about enterprise data to make it more discoverable."
+
+*(Row filters, column masks, PII anonymization, and data purging are Day 19 — not duplicated here.)*
+
+> ⚠️ **Correction notice:** An earlier draft of this content incorrectly stated that `DENY` is supported in Unity Catalog and that "DENY wins" is a UC precedence rule. **This has been verified against current Databricks documentation and is false.** `DENY` is a **legacy Hive Metastore statement only** — Databricks' own docs state plainly: *"This function is not supported by Unity Catalog"* and *"This statement applies only to the `hive_metastore` catalog and its objects."* Unity Catalog privileges are **purely additive** (grant/revoke only). This is corrected throughout below and is one of the highest-value traps to get right on the real exam.
 
 ---
 
 ## Part 1 — Unity Catalog Hierarchical Model
 
-### Three-Layer Hierarchy
-
-Unity Catalog uses a **three-level namespace** with inheritance flowing downward:
+### Three-level namespace
 
 ```
 CATALOG
   └── SCHEMA
-       └── TABLE / VIEW / MODEL / FUNCTION / etc.
+        └── TABLE / VIEW / MATERIALIZED VIEW / VOLUME / FUNCTION / MODEL
 ```
 
-**Inheritance rule:** Permissions granted at a higher level (catalog, schema) **cascade down** to all child objects, unless explicitly overridden.
+**Inheritance rule:** privileges granted at a higher level (metastore, catalog, schema) apply to **current and future** child objects automatically. Inheritance flows **top-down only** — granting a privilege on a table does not grant anything at the schema or catalog level above it.
 
-### Catalog Types
+### Catalog types
 
-| Type | Created By | Notes |
+| Type | Created by | Notes |
 |---|---|---|
-| **Unity Catalog managed** | Unity Catalog automatically | Storage location managed by UC |
-| **External** | User (with `CREATE CATALOG`) | Points to external cloud storage (S3/ADLS/GCS) |
-| **Foreign** | User | References a share from Delta Sharing |
+| **Unity Catalog managed** | User (`CREATE CATALOG`) | Storage location managed by UC |
+| **External / foreign catalog** | User, via a `CONNECTION` | Points to an externally federated data source (Lakehouse Federation) |
+| **Delta Sharing catalog** | User, from a share | References data shared in from another metastore/provider |
 
-### Default Catalog Behavior
-
-On enabling Unity Catalog, a workspace gets:
-- `main` catalog (managed by UC, tied to workspace's default storage)
-- System catalog (`system`)
-- Information schema (`information_schema`)
+### Defaults on a new UC-enabled workspace
+- A **workspace catalog** is created automatically and attached; **all users automatically get `USE CATALOG`** on it, plus `USE SCHEMA`, `CREATE TABLE`, `CREATE VOLUME`, `CREATE MODEL`, `CREATE FUNCTION`, and `CREATE MATERIALIZED VIEW` on its default schema.
+- `system` catalog (system tables — Day 21) and each catalog's `information_schema` are also present.
 
 ---
 
 ## Part 2 — Principal, Privilege, and Securable Model
 
-### The Three-Component ACL Model
-
-Every ACL entry is: **PRINCIPAL + PRIVILEGE + SECUREABLE**
-
-```
-GRANT <PRIVILEGE> ON <SECUREABLE> TO <PRINCIPAL>
-```
-
-### Principals (Who)
-
-| Principal | Description |
-|---|---|
-| `user@example.com` | Individual user by email |
-| `user:<user-id>` | Individual user by UUID |
-| `groups/<group-name>` | Group (best practice — assign permissions to groups, not users) |
-| `service:<service-principal-id>` | Service principal for applications |
-
-**Best practice:** Use groups. Assign users to groups. Grant permissions to groups. This maps cleanly to organizational structures.
-
-### Securables (What)
-
-| Securable Type | Examples |
-|---|---|
-| Catalog | `CREATE CATALOG`, `USAGE` |
-| Schema | `CREATE`, `USE SCHEMA` |
-| Table / View / Model | `SELECT`, `MODIFY`, `CREATE TABLE` |
-| External Location | `READ FILES`, `WRITE FILES` |
-| Volume | `READ FILES`, `WRITE FILES` |
-| Function | `EXECUTE` |
-| Pipeline | `RUN` |
-| Credential | `USE CREDENTIAL` |
-| Share (provider side) | `CREATE SHARE`, `CREATE RECIPIENT` |
-| Recipient (provider side) | `GRANT SHARE` |
-
-### Privileges (What they can do)
-
-| Privilege | Applies To | Description |
-|---|---|---|
-| `ALL PRIVILEGES` | Any | All applicable privileges |
-| `SELECT` | Tables, views | Read data |
-| `MODIFY` | Tables | INSERT, DELETE, UPDATE, TRUNCATE |
-| `CREATE` | Schema, catalog | Create child objects |
-| `USAGE` | Catalog, schema | Access the catalog/schema |
-| `CREATE TABLE` | Schema | Create tables |
-| `EXECUTE` | Functions | Run functions/UDFs |
-| `READ FILES` | Volumes, external locations | Read files from storage |
-| `WRITE FILES` | Volumes, external locations | Write files to storage |
-| `RUN` | Pipelines | Trigger pipeline runs |
-| `USE CREDENTIAL` | Credentials | Use credential for federation |
-| `CREATE SHARE` | Account | Create shares |
-| `GRANT SHARE` | Recipients | Share data |
-| `BROWSE` | Catalog, schema | List child objects |
-| `APPLY ON CLAIM` | Any | Delegate privileges (for row filters) |
-
----
-
-## Part 3 — Privilege Inheritance
-
-### How Inheritance Works
-
-When a privilege is granted on a parent object, it applies to all descendants unless overridden:
-
-```sql
--- Grant SELECT on the catalog → applies to all schemas and tables
-GRANT SELECT ON CATALOG prod TO analyst_group;
-
--- This table now inherits SELECT from catalog level
-SELECT * FROM prod.sales.customers;  -- analyst_group can read
-```
-
-### Explicit Override (DENY)
-
-DENY blocks a granted privilege at a lower level:
-
-```sql
-GRANT SELECT ON CATALOG prod TO analyst_group;
-
--- Override: deny SELECT on a specific sensitive table
-DENY SELECT ON prod.hr.salaries TO analyst_group;
-```
-
-Analyst group can read everything in `prod` except `prod.hr.salaries`.
-
-### Inheritance Direction
-
-**Bottom-up:** No. Parent permissions do NOT flow up. Granting on a table does NOT give access to the schema or catalog.
-
-**Top-down:** Yes. Catalog → Schema → Table. Explicit grants at each level override inherited ones.
-
-### Exam Trap — Inheritance Assumption
-
-A common exam scenario: "A user has USAGE on schema but not the catalog — can they access the table?" Without USAGE on the catalog, they cannot traverse the path to the schema. The catalog USAGE is required first.
-
-### System-Defined Roles
-
-Unity Catalog provides predefined roles (simplest way to grant common permission sets):
-
-| Role | SELECT | MODIFY | CREATE | USE SCHEMA |
-|---|---|---|---|---|
-| ` metastore-admin` | Yes | Yes | Yes | Yes |
-| `catalog-owner` | Yes | Yes | Yes | Yes |
-| `schema-owner` | No | Yes | Yes | Yes |
-| `table-owner` | No | Yes | No | Yes |
-
-Assign these via `GRANT` to delegate ownership.
-
----
-
-## Part 4 — GRANT, SHOW, and DENY
-
-### Basic GRANT Syntax
-
+Every ACL entry is: **PRINCIPAL + PRIVILEGE + SECURABLE**
 ```sql
 GRANT <privilege> ON <securable> TO <principal>
-GRANT SELECT ON TABLE prod.sales.customers TO `analysts@example.com`
-GRANT CREATE TABLE ON SCHEMA prod.sales TO `data_engineer_group`
-GRANT USAGE ON CATALOG prod TO `service:app-id`
 ```
 
-### Multiple Privileges
+### Principals (who)
+
+| Principal | Example |
+|---|---|
+| User | `` `alice@example.com` `` |
+| Group | `` `analysts` `` (best practice: grant to groups, not individuals) |
+| Service principal | `` `service-principal-id` `` (for jobs/pipelines/apps — never a personal account) |
+
+### Securable objects and their real privilege sets (verified against current Databricks docs)
+
+| Securable | Applicable privileges |
+|---|---|
+| **Metastore** | `CREATE CATALOG`, `CREATE CONNECTION`, `CREATE EXTERNAL LOCATION`, `CREATE PROVIDER`, `CREATE RECIPIENT`, `CREATE SHARE`, `CREATE STORAGE CREDENTIAL`, `READ METADATA` (inherits down to everything, unlike other metastore-level privileges) |
+| **Catalog** | `ALL PRIVILEGES`, `APPLY TAG`, `BROWSE`, `CREATE SCHEMA`, `USE CATALOG`, plus (grantable here to cascade to children): `CREATE TABLE`, `CREATE VIEW`, `CREATE FUNCTION`, `CREATE MODEL`, `CREATE VOLUME`, `CREATE MATERIALIZED VIEW`, `USE SCHEMA`, `SELECT`, `MODIFY`, `EXECUTE`, `READ VOLUME`, `WRITE VOLUME`, `MANAGE` |
+| **Schema** | Same child-level set as above, scoped to that schema |
+| **Table** | `ALL PRIVILEGES`, `APPLY TAG`, `MANAGE`, `MODIFY`, `SELECT` |
+| **View** | `ALL PRIVILEGES`, `APPLY TAG`, `MANAGE`, `SELECT` |
+| **Materialized view** | `ALL PRIVILEGES`, `APPLY TAG`, `MANAGE`, `REFRESH`, `SELECT` |
+| **Volume** | `ALL PRIVILEGES`, `APPLY TAG`, `MANAGE`, `READ VOLUME`, `WRITE VOLUME` |
+| **Function / Model** (models are a function type) | `ALL PRIVILEGES`, `APPLY TAG`, `EXECUTE`, `MANAGE` |
+| **External location** | `ALL PRIVILEGES`, `BROWSE`, `CREATE EXTERNAL TABLE`, `CREATE EXTERNAL VOLUME`, `EXTERNAL USE LOCATION`, `MANAGE`, `READ FILES`, `WRITE FILES` |
+| **Connection** (Lakehouse Federation) | `ALL PRIVILEGES`, `CREATE FOREIGN CATALOG`, `MANAGE`, `USE CONNECTION` |
+| **Share** | `SELECT` (grantable to a `RECIPIENT`) |
+
+**Note:** there is **no generic `USAGE` privilege** in current Unity Catalog — the correct, exam-tested keywords are **`USE CATALOG`** and **`USE SCHEMA`** specifically. `USAGE` was Hive-Metastore-era terminology; using it in a UC `GRANT` statement is not valid syntax.
+
+---
+
+## Part 3 — Privilege Inheritance (the core tested behavior)
+
+### How inheritance actually works
 
 ```sql
-GRANT SELECT, MODIFY ON TABLE prod.sales TO analyst_group;
+-- Grant SELECT at the catalog level → applies to every schema/table now AND created later
+GRANT USE CATALOG ON CATALOG prod TO analyst_group;
+GRANT USE SCHEMA, SELECT ON SCHEMA prod.sales TO analyst_group;
+
+-- analyst_group can now read this, and any FUTURE table added to prod.sales too:
+SELECT * FROM prod.sales.customers;
+```
+
+### The traversal chain — the #1 tested scenario
+
+> **To `SELECT` from `prod.sales.customers`, a principal needs `USE CATALOG` on `prod` AND `USE SCHEMA` on `prod.sales` AND `SELECT` on `prod.sales.customers`.** Missing any single link → access denied, even if the other two links are present.
+
+**Exam trap:** "A user has `USE SCHEMA` on the schema and `SELECT` on the table, but not `USE CATALOG` on the catalog — can they query it?" **No.** Without `USE CATALOG`, they cannot even traverse into the catalog to reach the schema, regardless of what's granted below it.
+
+### There is no DENY — how to actually restrict access
+
+Because Unity Catalog grants are **purely additive**, you cannot broadly grant at a high level and then "carve out" an exception at a lower level with a deny statement. If you need `analysts` to read everything in `prod` **except** `prod.hr.salaries`, the correct patterns are:
+
+1. **Structural separation** — keep `prod.hr` in its own schema/catalog that is never covered by the broad grant, and grant `analysts` only the schemas they should see individually (rather than one blanket catalog-level grant).
+2. **Row filters / column masks** (Day 19) — grant `SELECT` normally, but attach a row filter or column mask function to the sensitive table/columns so restricted rows/values are hidden at query time regardless of the `SELECT` grant.
+
+```sql
+-- WRONG — this does not exist in Unity Catalog:
+-- DENY SELECT ON TABLE prod.hr.salaries FROM analyst_group;
+
+-- RIGHT — structural approach: don't include hr in the broad grant at all
+GRANT USE CATALOG ON CATALOG prod TO analyst_group;
+GRANT USE SCHEMA, SELECT ON SCHEMA prod.sales TO analyst_group;      -- sales: yes
+-- prod.hr is simply never granted to analyst_group
+```
+
+### Revoking within the inheritance model
+```sql
+REVOKE SELECT ON SCHEMA prod.sales FROM analyst_group;
+```
+- This removes the **inherited** access that came from this specific schema-level grant.
+- If `analyst_group` also has a **separate, explicit** grant directly on one table in that schema, that grant is a distinct record and **survives** this revoke — revokes are scoped to the level at which the grant was issued.
+- `REVOKE ALL PRIVILEGES` only revokes the `ALL PRIVILEGES` grant itself — any other privileges granted separately to that principal remain untouched.
+
+### Ownership vs. privileges
+- Every securable has exactly **one owner**. The owner automatically has all capabilities on the object (functionally equivalent to `ALL PRIVILEGES`, though Databricks doesn't literally list it that way in `SHOW GRANTS`).
+- **`ALL PRIVILEGES` ≠ `OWNERSHIP`.** `ALL PRIVILEGES` is the union of grantable privileges; only the owner (or someone the owner promotes) can grant/revoke on the object, transfer ownership, or drop it.
+- **Ownership does not cascade downward** — owning a catalog does not make you the owner of the schemas/tables inside it. You (or the object's actual owner) still need explicit grants on child objects to act on them, even as the parent's owner.
+- **`MANAGE` privilege** lets a principal grant/revoke privileges on an object (like a delegated admin) without making them the owner — they don't automatically get data-access privileges like `SELECT` unless they grant it to themselves.
+- Metastore admins and account admins bypass privilege checks entirely.
+
+---
+
+## Part 4 — GRANT, REVOKE, SHOW GRANTS
+
+```sql
+-- Grant
+GRANT SELECT ON TABLE prod.sales.customers TO `analysts@example.com`;
+GRANT CREATE TABLE ON SCHEMA prod.sales TO `data_engineers`;
+GRANT USE CATALOG ON CATALOG prod TO `service-principal-id`;
+GRANT SELECT, MODIFY ON TABLE prod.sales.orders TO etl_group;
 GRANT ALL PRIVILEGES ON SCHEMA prod.sales TO admin_group;
-```
 
-### Revoking Access
+-- Revoke
+REVOKE SELECT ON TABLE prod.sales.customers FROM `analysts@example.com`;
+REVOKE ALL PRIVILEGES ON SCHEMA prod.sales FROM ex_employee_group;
 
-```sql
-REVOKE SELECT ON TABLE prod.sales FROM `analysts@example.com`;
-REVOKE ALL PRIVILEGES ON SCHEMA prod.sales FROM ex_employee;
-```
-
-### Viewing Permissions
-
-```sql
--- Show grants on a specific object
+-- Inspect
 SHOW GRANTS ON TABLE prod.sales.customers;
-
--- Show all grants for a principal
-SHOW GRANTS FOR `analysts@example.com`;
-
--- Show all granted privileges (catalog level)
+SHOW GRANTS `analysts@example.com` ON SCHEMA prod.sales;
 SHOW GRANTS ON CATALOG prod;
-```
 
-### DENY Precedence
-
-DENY always wins over GRANT. The evaluation order:
-
-1. DENY (blocked)
-2. GRANT (allowed)
-
-If a user belongs to two groups — one granted SELECT, one DENY'd — the DENY wins.
-
-```sql
-GRANT SELECT ON CATALOG prod TO all_employees;
-DENY SELECT ON prod.hr.salaries TO all_employees;
--- all_employees can read prod.* except prod.hr.salaries
+SELECT grantee, privilege_type, table_schema, table_name
+FROM prod.information_schema.table_privileges;
 ```
 
 ---
 
-## Part 5 — Securing Workspace Objects
+## Part 5 — Securing Workspace Objects (the other ACL plane)
 
-### Workspace vs Unity Catalog Scope
+Two independent planes — a very frequently tested distinction:
 
-| Scope | Managed By | ACL Type |
+| Plane | Secures | Mechanism |
 |---|---|---|
-| Workspace-level objects | Workspace ACLs | Workspace permissions (legacy) |
-| Unity Catalog objects | Unity Catalog | Catalog ACLs |
+| **Workspace ACLs** | Notebooks, folders, jobs, clusters, DBSQL warehouses, dashboards, alerts, MLflow experiments (legacy), tokens, secret scopes | Permissions tab in UI / `permissions` REST API / `access_control_list` in DAB YAML — levels like Can View/Run/Edit/Manage |
+| **Unity Catalog ACLs** | Catalogs, schemas, tables, views, volumes, functions, models, connections, shares, credentials, external locations | `GRANT`/`REVOKE` SQL, Catalog Explorer UI |
 
-When Unity Catalog is enabled, all data objects (tables, schemas, catalogs) are managed by Unity Catalog. Workspace ACLs still apply to notebooks, experiments, and other non-data objects.
+**Exam trap:** a user with "Can Manage" on a notebook (workspace ACL) but no UC grants on the tables it queries will still get an access-denied error at the data layer — fixing the notebook permission does nothing for the data permission, and vice versa.
 
-### Objects Still Using Workspace ACLs (post-UC enablement)
-
-- Notebooks
-- Notebooks folders
-- MLflow experiments and models (legacy)
-- Dashboards
-- Job definitions
-- Legacy Hive metastore tables (migrated separately)
-
-### Unity Catalog-Managed Objects
-
-- All tables (managed and external)
-- All schemas and catalogs
-- Models registered to Unity Catalog
-- Volumes
-- Connections (federation)
-- Shares and recipients
-- External locations
-- Credentials
-
-### Least Privilege in Practice
-
-**Principle:** Grant only the privileges required for a role's tasks. No broad grants.
-
+### Least-privilege in practice
 ```sql
--- BAD: Grant ALL PRIVILEGES on catalog
+-- Avoid blanket ALL PRIVILEGES for read-only consumers:
+-- BAD
 GRANT ALL PRIVILEGES ON CATALOG prod TO analyst_group;
-
--- GOOD: Grant only SELECT (read access)
-GRANT SELECT ON CATALOG prod TO analyst_group;
-
--- BETTER for writers: SELECT + MODIFY
-GRANT SELECT, MODIFY ON CATALOG prod TO etl_pipeline_service_account;
+-- GOOD
+GRANT USE CATALOG ON CATALOG prod TO analyst_group;
+GRANT USE SCHEMA, SELECT ON SCHEMA prod.sales TO analyst_group;
 ```
 
-### Secure External Locations
+### Cluster policies — least privilege at the compute layer
+- **Cluster policies** are the mechanism for the "policy enforcement" phrase in the objective bullet — an admin defines allowed node types, autoscaling bounds, Spark configs, and required access mode (e.g., must be Unity-Catalog-enabled/shared), then grants specific users/groups "Can Use" on that policy.
+- Users without "Can Use" on any unrestricted policy cannot create clusters outside those guardrails. This is a **separate mechanism from UC data grants** — don't conflate "who can query this table" with "who can launch this cluster configuration."
 
-External locations bind storage paths to Unity Catalog credentials:
-
+### External locations (governed raw-storage access)
 ```sql
--- Create external location with credential
 CREATE EXTERNAL LOCATION IF NOT EXISTS landing_zone
-    URL 's3://company-landing-bucket/'
-    CREDENTIAL landing_zone_cred
-    COMMENT 'Ingest landing zone';
+  URL 's3://company-landing-bucket/'
+  CREDENTIAL landing_zone_cred
+  COMMENT 'Ingest landing zone';
 
--- Grant read/write to ETL group only
 GRANT READ FILES, WRITE FILES ON EXTERNAL LOCATION landing_zone TO etl_group;
 ```
+External locations bind a storage path to a credential, then privileges (`READ FILES`, `WRITE FILES`, `CREATE EXTERNAL TABLE`, `CREATE EXTERNAL VOLUME`) are granted on that named location rather than on raw cloud paths directly.
 
-### Row Filters and Column Masks (covered Day 19, noted here for context)
+### Service principals for automated workloads
+```sql
+GRANT USE CATALOG, USE SCHEMA ON CATALOG prod TO `etl-service-principal-id`;
+GRANT SELECT, MODIFY ON SCHEMA prod.sales TO `etl-service-principal-id`;
+```
+Production jobs/pipelines should authenticate and run **as a service principal**, never as a personal account — ties access to the workload's lifecycle, not an employee's. (Connects directly to the DAB `run_as: service_principal_name` pattern from Day 2/25.)
 
-Row filters and column masks are applied AFTER ACL checks. A user with SELECT on a table still sees filtered/masked data if a row filter or column mask is defined.
+### Views vs. underlying tables
+When a user queries a **view**, Unity Catalog checks ACLs on the **view itself**, not (necessarily) the base tables — a user can have `SELECT` on a view but nothing on the underlying table, and the query still succeeds, because the view's owner already has the rights needed to read the base table on the caller's behalf. This is a deliberate and useful pattern for exposing a curated slice of restricted data (e.g., pairs with row filters/column masks on Day 19 — those are enforced *after* the ACL check, on top of whatever the ACL allows through).
 
 ---
 
-## Part 6 — Unity Catalog vs Legacy Hive Metastore ACLs
+## Part 6 — Unity Catalog vs. Legacy Hive Metastore ACLs
 
-| Aspect | Unity Catalog | Legacy Hive Metastore |
+| Aspect | Unity Catalog | Legacy Hive Metastore table ACLs |
 |---|---|---|
-| Scope | Account-level | Workspace-level |
+| Scope | Account-level, cross-workspace | Workspace-level |
 | Hierarchy | Catalog → Schema → Table | Database → Table |
-| Inheritance | Yes, top-down | No |
-| DENY support | Yes | No |
-| Row filters | Yes | No |
-| Column masks | Yes | No |
-| Cross-workspace sharing | Via Delta Sharing | Not natively |
-| Audit | System tables | Limited |
-
-**Migration:** Use the migration wizard or `CATALOG MIGRATION` commands to move from Hive metastore to Unity Catalog.
+| Inheritance | Yes, top-down, forward-looking | No |
+| **`DENY` support** | **No — not supported** | **Yes** (this is the source of the common exam confusion) |
+| Row filters / column masks | Yes | No |
+| Fine-grained volumes | Yes | N/A |
+| Cross-workspace sharing | Via Delta Sharing | Not native |
+| Audit | `system` tables | Limited |
 
 ---
 
-## Part 7 — Service Principals and Workload Identity
+## Part 7 — Exam Traps Recap
 
-### Service Principals
+1. **`SELECT` granted but the query still fails** → missing `USE CATALOG` and/or `USE SCHEMA` somewhere in the traversal chain. The single most-tested pattern for this objective.
+2. **"How do I deny just this one user/table from a broad grant?"** → **there is no `DENY` in Unity Catalog.** The answer is always structural (separate schema) or row filter/column mask — never a deny statement. (`DENY` only exists for `hive_metastore`.)
+3. **Workspace object permission ≠ UC data permission** — two fully independent checks; fixing one doesn't fix the other.
+4. **New table created inside an already-granted schema** → access is automatic and immediate, no re-grant needed (forward-looking inheritance).
+5. **`ALL PRIVILEGES` ≠ `OWNERSHIP`** — ownership is a distinct, non-cascading, per-object attribute.
+6. **Cluster size/config restriction** → cluster policies + "Can Use," not UC grants (different plane entirely).
+7. **"Most scalable / least-privilege" answer among options** → grant to **groups**, not individual users; use **service principals** for automated/production workloads.
+8. **Revoking a schema-level grant** does not remove a separately-issued, explicit table-level grant to the same principal.
+9. **Tags and comments are not preserved by `DEEP CLONE` or `CTAS`** (Part 8) — only the table structure/data is copied; metadata must be reapplied.
 
-Service principals represent applications or automated workloads (not human users):
+---
 
+## Part 8 — Data Governance: Metadata and Discoverability (Section 8 objective)
+
+Discoverability is a distinct governance objective from access control — it's about making *approved* data findable and self-explanatory, not about who can read it.
+
+### Comments — at every level, including columns
 ```sql
-CREATE SERVICE PRINCIPAL app_pipeline
-    COMMENT 'ETL pipeline automation account';
-
-GRANT SELECT ON CATALOG prod TO service-principal:app-pipeline-id;
-GRANT CREATE TABLE ON SCHEMA prod.sales TO service-principal:app-pipeline-id;
-```
-
-### Credential-Based Authentication
-
-For automated workloads, use **OAuth 2.0** or **service principal + secrets**:
-
-```bash
-# Databricks CLI with service principal
-databricks configure --service-principal \
-    --host https://$(databricks workspace configure --get-host) \
-    --client-id $DATABRICKS_CLIENT_ID \
-    --client-secret $DATABRICKS_CLIENT_SECRET
-```
-
-### Workspace vs Account-Level Permissions
-
-Some permissions are granted at the **account level** (not workspace):
-
-- `CREAT CATALOG` (requires account-level privilege)
-- `CREATE SHARE`, `CREATE RECIPIENT`
-- `CREATE EXTERNAL LOCATION`
-- `CREATE CREDENTIAL`
-
-Workspace-level ACLs cannot grant these — they must be done at the account level by an account admin.
-
----
-
-## Part 8 — Exam Traps and Common Misconceptions
-
-### Trap 1: ALL PRIVILEGES Does Not Mean ALL
-
-`ALL PRIVILEGES` on a table does not include `OWNERSHIP`. Ownership is a separate privilege transferred via `OWNERSHIP` or when creating the object.
-
-### Trap 2: USAGE Is Required Before Any Operation
-
-Without `USAGE` on the catalog, users cannot access schemas inside it — even with explicit grants on the schema. The inheritance path must be open at each level.
-
-### Trap 3: REVOKE Does Not Recursively Remove All Grants
-
-REVOKE removes only the specifically granted privilege. If a user inherited a privilege from a group grant, revoking from the group removes it. But explicit grants on child objects remain.
-
-### Trap 4: DENY Wins — Even From Multiple Groups
-
-If a user is in group A (granted SELECT) and group B (denied SELECT), the DENY wins. This is a critical exam pattern.
-
-### Trap 5: ACLs Apply to Views, Not Underlying Tables
-
-When a user queries a view, Unity Catalog checks ACLs on the **view**, not the underlying tables. If a user has SELECT on the view but not the base table, they can still access data through the view — provided the view owner has the necessary permissions (which they do, since they created the view).
-
----
-
-## Cross-References
-
----
-
-## Part 9 — Data Governance: Metadata and Discoverability
-
-### What Metadata Means in Unity Catalog
-
-Unity Catalog stores descriptions and properties at every level of the hierarchy. This metadata appears in the Catalog Explorer UI, in `DESCRIBE`, and in the `information_schema`. Good metadata makes data self-documenting — users can search and understand data without needing to ask a data engineer.
-
-### COMMENT / DESCRIBE Syntax
-
-```sql
--- Add description to a catalog
 ALTER CATALOG prod SET COMMENT 'Production data — all business units';
-
--- Add description to a schema
 ALTER SCHEMA prod.sales SET COMMENT 'Sales transactions — orders, returns, subscriptions';
+ALTER TABLE prod.sales.customers SET COMMENT 'All customer records — nightly CRM sync';
+ALTER TABLE prod.sales.customers ALTER COLUMN email SET COMMENT 'PII — masked for analysts';
 
--- Add description to a table
-ALTER TABLE prod.sales.customers SET COMMENT 'All customer records — updated nightly from CRM';
-
--- Add description to a column
-ALTER TABLE prod.sales.customers ALTER COLUMN email SET COMMENT 'Customer email — PII, masked for analysts';
-
--- Add description via CREATE
+-- Or inline at creation time
 CREATE TABLE prod.sales.orders (
-    order_id BIGINT COMMENT 'Unique order identifier',
-    customer_id BIGINT COMMENT 'FK to customer record',
-    order_date DATE COMMENT 'Date order was placed — local timezone',
-    total_amount DECIMAL(10,2) COMMENT 'Order total in USD'
+  order_id     BIGINT  COMMENT 'Unique order identifier',
+  customer_id  BIGINT  COMMENT 'FK to customer record',
+  order_date   DATE    COMMENT 'Date order was placed — local timezone',
+  total_amount DECIMAL(10,2) COMMENT 'Order total in USD'
 ) COMMENT 'All completed orders from the e-commerce platform';
 ```
 
-### View Metadata
-
+### Tags — structured classification, not free text
 ```sql
--- DESCRIBE (short form: DESC)
-DESCRIBE CATALOG prod;
-DESCRIBE SCHEMA prod.sales;
+ALTER TABLE prod.hr.salaries SET TAGS ('sensitivity' = 'confidential');
+ALTER TABLE prod.sales.customers SET TAGS ('pii' = 'true', 'department' = 'sales');
+ALTER TABLE prod.sales.customers UNSET TAG 'pii';
+
+SELECT * FROM prod.information_schema.table_tags WHERE tag_name = 'pii';
+```
+
+**Tags vs. comments:**
+
+| Feature | Purpose | Persists after `DEEP CLONE` / `CTAS`? |
+|---|---|---|
+| `COMMENT` | Human-readable description (what/when/source) | **No** — not copied by `CTAS`; `DEEP CLONE` copies table properties/comments at the table level in some cases, but **do not rely on this** — always verify and reapply |
+| `TAG` | Structured classification (PII, GDPR, cost center) | **No** — not automatically carried over by `DEEP CLONE` or `CTAS`. Must be reapplied programmatically as part of the pipeline that creates the derived table. |
+
+**Exam trap:** if a question describes cloning or CTAS-ing a tagged/commented table and asks whether the new table is still tagged/discoverable the same way, the answer is **no — metadata must be reapplied**, since only the data/schema structure is copied.
+
+### Table properties and DESCRIBE DETAIL
+```sql
+ALTER TABLE prod.sales.orders SET TBLPROPERTIES (
+  'source_system' = 'ecommerce',
+  'refresh_frequency' = 'daily'
+);
+
+DESCRIBE DETAIL prod.sales.orders;   -- format, size, partitioning, properties, location
 DESCRIBE TABLE prod.sales.customers;
 DESCRIBE TABLE prod.sales.customers COLUMN email;
+```
 
--- From information_schema
+### Programmatic discovery via information_schema
+```sql
 SELECT table_catalog, table_schema, table_name, comment
-FROM information_schema.tables
-WHERE table_catalog = 'prod';
-```
+FROM prod.information_schema.tables
+WHERE comment IS NOT NULL;
 
-### Data Classification and Tags
-
-Beyond descriptions, Unity Catalog supports **tags** (key-value labels) for classification:
-
-```sql
--- Set a tag on a table (requires admin or owner)
-ALTER TABLE prod.hr.salaries SET TAG sensitivity = 'confidential';
-
--- Set multiple tags
-ALTER TABLE prod.sales.customers SET TAGS (pii = 'true', department = 'sales');
-
--- Query tables by tag
-SELECT * FROM information_schema.table_tags
-WHERE tag_name = 'pii' AND tag_value = 'true';
-
--- Remove a tag
-ALTER TABLE prod.sales.customers UNSET TAG pii;
-```
-
-### Tags vs Comments — When to Use Each
-
-| Feature | Use Case | Persists after clone? |
-|---|---|---|
-| `COMMENT` | Human-readable descriptions (what, when, source) | No (only metadata) |
-| `TAG` | Classification labels (PII, GDPR, department, cost center) | Yes (via Lakehouse monitoring) |
-
-**Exam trap:** Tags set on a table are NOT preserved when you do a DEEP CLONE or CTAS. Comments are also not preserved in CTAS. Only the table structure is copied. Tags that need to survive cloning must be reapplied programmatically.
-
-### Row-Level Metadata
-
-Table properties can store custom key-value metadata:
-
-```sql
--- Set custom table properties
-ALTER TABLE prod.sales.orders SET TBLPROPERTIES ('source_system' = 'ecommerce', 'refresh_frequency' = 'daily');
-
--- View properties
-DESCRIBE DETAIL prod.sales.orders;
-```
-
-`DESCRIBE DETAIL` returns schema plus table properties including format, size, and partition info.
-
-### Information Schema — Programmatic Discovery
-
-The `information_schema` provides SQL-native access to all catalog metadata:
-
-```sql
--- Find all tables in prod that have comments
-SELECT table_catalog, table_schema, table_name, comment
-FROM information_schema.tables
-WHERE table_catalog = 'prod'
-  AND comment IS NOT NULL;
-
--- Find all columns with descriptions
 SELECT table_catalog, table_schema, table_name, column_name, comment
-FROM information_schema.columns
-WHERE comment IS NOT NULL
-ORDER BY table_catalog, table_schema, table_name;
-
--- Find tables by tag (if tags are surfaced in information_schema)
-SELECT * FROM information_schema.table_tags
-WHERE tag_name = 'pii';
+FROM prod.information_schema.columns
+WHERE comment IS NOT NULL;
 ```
 
-### Governance Best Practices
-
-1. **Add COMMENT to every catalog, schema, table, and column** — at minimum, the business purpose and data source.
-2. **Tag PII columns** using tags like `pii=true`, `gdpr=true`, or `classification=restricted`.
-3. **Document update cadence** in table comments (e.g., "updated hourly", "batch daily at 2am UTC").
-4. **Document data ownership** — Unity Catalog does not have a native owner tag beyond ACLs; document in the schema or table comment.
-5. **Use information_schema** for data lineage and discoverability tooling — query it to build data catalogs.
+### Governance best practices
+1. Comment every catalog, schema, table, and PII-relevant column — at minimum, business purpose and source system.
+2. Tag PII/GDPR-relevant columns consistently (`pii=true`, `classification=restricted`) so tag-based automation (row filters, masking policies) can key off them later.
+3. Document refresh cadence in table comments or `TBLPROPERTIES`.
+4. Reapply tags/comments explicitly in any pipeline step that clones or CTAS-es a table — don't assume they survive.
+5. Use `information_schema` programmatically to power internal data-catalog tooling or completeness audits (e.g., "which tables have no comment yet").
 
 ---
 
 ## Cross-References
-
-- Day 17: Row filters and column masks build on these ACLs
-- Day 19: Anonymization, pseudonymization, and data purging
-- Day 20: Delta Sharing and Lakehouse Federation permissions
-- Day 21: System tables for audit of ACL changes
+- Day 19: Row filters, column masks, PII anonymization/pseudonymization, data purging — builds directly on the ACL model above (filters/masks apply *after* the ACL check succeeds).
+- Day 20: Delta Sharing and Lakehouse Federation permissions (`CREATE SHARE`, `USE CONNECTION`, etc. from the metastore-level privilege table above).
+- Day 21: `system` tables for auditing grant/revoke history and access patterns.
+- Day 2 / 25: Service principal `run_as` pattern in Declarative Automation Bundles ties directly into the service-principal grants above.

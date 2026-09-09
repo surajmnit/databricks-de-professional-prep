@@ -1,556 +1,331 @@
 # Day 18 — Hands-On Lab: Unity Catalog ACLs and Permissions
 
+> ⚠️ **Correction notice:** this lab has been corrected against current Databricks documentation. Two things in an earlier draft were wrong and have been fixed throughout: (1) **`DENY` does not exist in Unity Catalog** — it's a legacy Hive Metastore statement only, so every "DENY precedence" step below has been replaced with the correct structural/row-filter approach; (2) **the traversal privilege is `USE CATALOG` / `USE SCHEMA`**, not a generic `USAGE` — every `GRANT USAGE ...` example has been corrected.
+
 ## Lab Objectives
 
-1. Explore the Unity Catalog hierarchy (catalog → schema → table)
-2. Grant and revoke privileges on catalogs, schemas, and tables
-3. Observe how inheritance flows through the hierarchy
-4. Use SHOW GRANTS to verify effective permissions
-5. Test DENY precedence over GRANT
-6. Observe the difference between workspace ACLs and Unity Catalog ACLs
-7. Add and query metadata (COMMENT, DESCRIBE, tags, information_schema) for data discoverability
+1. Explore the Unity Catalog hierarchy (catalog → schema → table).
+2. Grant and revoke privileges on catalogs, schemas, and tables using correct UC syntax.
+3. Reproduce the "missing link in the traversal chain" failure firsthand.
+4. Use `SHOW GRANTS` correctly to verify effective permissions.
+5. Confirm there is no `DENY` in Unity Catalog, and practice the correct alternative for restricting a subset of a broad grant.
+6. Distinguish workspace ACLs from Unity Catalog ACLs.
+7. Configure least-privilege service principal access.
+8. Add and query metadata (`COMMENT`, `DESCRIBE`, tags, `information_schema`) for discoverability, and observe metadata loss on `DEEP CLONE`.
 
-**Note:** Full hands-on with real ACL changes requires admin access to a Unity Catalog-enabled workspace. This lab provides syntax that runs against your workspace's Unity Catalog objects. Community Edition has limited UC support (may not support creating new catalogs/schemas on CE). If CE does not support the full ACL syntax, treat steps as read-only exploration of existing objects.
+**Environment note:** this lab needs a Unity-Catalog-enabled workspace with either admin rights or a sandbox catalog you own. **Community Edition historically has limited or no Unity Catalog support** (run `SHOW CATALOGS;` — if you only see `hive_metastore`/`samples` and nothing you can create under, UC isn't available to you). If that's your situation, run every statement below anyway as **syntax practice** — they are valid Databricks SQL and Databricks Runtime commands; where a step needs admin rights you don't have, read the expected result rather than executing it, and treat `SHOW GRANTS` output for `main`/`samples` as your only live verification. Where possible, prefer actually running the read-only inspection steps (Steps 1–2) against whatever catalog you do have access to, even if it's just `main`.
 
 ---
 
 ## Step 1 — Explore the Unity Catalog Hierarchy
 
-**Objective:** Map the three-level namespace in your workspace.
-
-### 1a. List all catalogs
-
+### 1a. List catalogs, schemas, tables
 ```python
-catalogs = spark.sql("SHOW CATALOGS")
-catalogs.display()
+spark.sql("SHOW CATALOGS").display()
+spark.sql("SHOW SCHEMAS IN prod").display()
+spark.sql("SHOW TABLES IN prod.sales").display()
 ```
+**What to observe:** the three-level namespace (catalog → schema → table). Note the default catalogs available on any UC-enabled workspace: `main`, `system`, and each catalog's `information_schema`.
 
-### 1b. List schemas within a catalog
-
+### 1b. Who am I, and what can I already reach?
 ```python
-schemas = spark.sql("SHOW SCHEMAS IN prod")
-schemas.display()
-```
-
-### 1c. List tables within a schema
-
-```python
-tables = spark.sql("SHOW TABLES IN prod.sales")
-tables.display()
-```
-
-**What to observe:** The three-level hierarchy (catalog → schema → table) is visible in the results. Note the default catalogs: `main`, `system`, `information_schema`.
-
-### 1d. View the current user's effective catalogs
-
-```python
-# Who am I?
 current_user = spark.sql("SELECT current_user()").collect()[0][0]
 print(f"Current user: {current_user}")
 
-# What catalogs does this user have USAGE on?
-spark.sql("SHOW CATALOGS").filter("catalogName IN ('prod', 'main', 'samples')").display()
+spark.sql("SHOW CATALOGS").display()   # catalogs you have at least USE CATALOG on
 ```
 
 ---
 
 ## Step 2 — Inspect Existing Grants
 
-**Objective:** Read existing ACLs to understand the security posture of a catalog.
-
-### 2a. Show all grants on a specific table
-
+### 2a. Grants on a table
 ```python
-grants_table = spark.sql("SHOW GRANTS ON TABLE prod.sales.customers")
-grants_table.display()
+spark.sql("SHOW GRANTS ON TABLE prod.sales.customers").display()
 ```
+Look for: principal, `actionType` (the privilege, e.g. `SELECT`), `objectType`, `objectKey`.
 
-**What to look for:** Principals (users, groups, service principals), privileges (SELECT, MODIFY, etc.), and inherited grants.
-
-### 2b. Show grants for a specific principal
-
+### 2b. Grants on a schema and a catalog
 ```python
-# Replace with your email or group name
-my_principal = spark.sql("SELECT current_user()").collect()[0][0]
-grants_user = spark.sql(f"SHOW GRANTS FOR {my_principal}")
-grants_user.display()
+spark.sql("SHOW GRANTS ON SCHEMA prod.sales").display()
+spark.sql("SHOW GRANTS ON CATALOG prod").display()
 ```
+**What to observe:** catalog- and schema-level grants are what cascade to every current and future object beneath them — if a table shows no direct grants of its own, check the levels above it before assuming no one has access.
 
-### 2c. Show grants on a schema (to see inherited vs direct grants)
-
+### 2c. Grants scoped to yourself
 ```python
-grants_schema = spark.sql("SHOW GRANTS ON SCHEMA prod.sales")
-grants_schema.display()
+# SHOW GRANTS requires an object — there is no bare "show everything for me" form.
+# Check yourself against a specific object you care about:
+spark.sql(f"SHOW GRANTS `{current_user}` ON CATALOG prod").display()
+spark.sql(f"SHOW GRANTS `{current_user}` ON SCHEMA prod.sales").display()
 ```
-
-**What to observe:** Grants at the schema level apply to all tables in the schema. Table-level grants are explicit and shown separately.
-
-### 2d. Show catalog-level grants
-
-```python
-grants_catalog = spark.sql("SHOW GRANTS ON CATALOG prod")
-grants_catalog.display()
-```
-
-**What to observe:** Catalog-level grants cascade to all schemas and tables. If a table has no direct grants, check the catalog and schema levels.
+**Correction vs. some older notes:** the real syntax is `SHOW GRANTS [principal] ON <securable_object>` — the `securable_object` is required. There is no standalone `SHOW GRANTS FOR <principal>` that lists every grant across every object account-wide; to get a full account-wide picture of one principal's access, you'd either check object-by-object like this, or query `system.access.audit` / `information_schema.*_privileges` views for the catalogs you care about (Day 21 territory).
 
 ---
 
-## Step 3 — GRANT Syntax Practice (Syntax-Only — No Actual Changes in CE)
+## Step 3 — GRANT Syntax Practice
 
-**Objective:** Familiarize yourself with the correct GRANT syntax.
-
-These commands require admin privileges to execute. On CE, run them for syntax familiarity — they will error without admin permissions.
+Run for syntax familiarity; these require ownership/`MANAGE`/admin rights to actually take effect.
 
 ```python
-# Grant SELECT on a catalog to a group
-spark.sql("""
-    GRANT SELECT ON CATALOG prod
-    TO `groups/data-analysts`
-""")
+# Traversal + read for an analytics group
+spark.sql("GRANT USE CATALOG ON CATALOG prod TO `analysts`")
+spark.sql("GRANT USE SCHEMA ON SCHEMA prod.sales TO `analysts`")
+spark.sql("GRANT SELECT ON SCHEMA prod.sales TO `analysts`")   # schema-level SELECT cascades to all current+future tables
 
-# Grant MODIFY (INSERT, UPDATE, DELETE) on a schema to a service account
-spark.sql("""
-    GRANT MODIFY ON SCHEMA prod.sales
-    TO `service-principal:12345-abcd-6789`
-""")
+# Write access for an ETL service principal, staging schema only
+spark.sql("GRANT USE CATALOG ON CATALOG prod TO `etl-pipeline-sp`")
+spark.sql("GRANT USE SCHEMA, CREATE TABLE, MODIFY ON SCHEMA prod.staging TO `etl-pipeline-sp`")
 
-# Grant USAGE + CREATE TABLE on a schema for ETL pipeline
-spark.sql("""
-    GRANT USAGE ON CATALOG prod TO `service-principal:etl-pipeline-id`
-""")
-spark.sql("""
-    GRANT CREATE TABLE ON SCHEMA prod.sales TO `service-principal:etl-pipeline-id`
-""")
-
-# Grant specific privileges
-spark.sql("""
-    GRANT SELECT, MODIFY ON TABLE prod.sales.customers
-    TO `groups/etl-writers`
-""")
+# Specific table-level grant
+spark.sql("GRANT SELECT, MODIFY ON TABLE prod.sales.customers TO `etl-writers`")
 ```
-
-**Note:** If you have admin access, execute these against your test workspace. If not, move to Step 4 to verify with SHOW GRANTS.
 
 ---
 
-## Step 4 — DENY vs GRANT Precedence
+## Step 4 — 💥 Break It On Purpose: The Missing Traversal Link
 
-**Objective:** Observe that DENY always overrides GRANT, even when the principal is in multiple groups.
+**Objective:** reproduce the #1 tested failure mode — a table-level grant that doesn't work because a level above it was never granted.
 
-### 4a. Scenario: Deny a sensitive table within an open catalog grant
-
+### 4a. Grant SELECT directly on a table, but skip USE SCHEMA
 ```python
-# Assumes: all_employees group has SELECT on CATALOG prod
-# but needs to be denied access to prod.hr.salaries
+spark.sql("GRANT SELECT ON TABLE prod.bronze.raw_orders TO `analysts`")
+# Deliberately do NOT grant USE SCHEMA on prod.bronze yet
+```
+**Predict first:** can a member of `analysts` query `prod.bronze.raw_orders` right now?
 
-# Syntax (requires admin):
-spark.sql("""
-    DENY SELECT ON TABLE prod.hr.salaries
-    TO `groups/all_employees`
-""")
+**Verify:**
+```python
+spark.sql("SHOW GRANTS ON TABLE prod.bronze.raw_orders").display()
+spark.sql("SHOW GRANTS ON SCHEMA prod.bronze").display()
+# As a member of analysts (or reasoning through the grants shown above):
+try:
+    spark.sql("SELECT * FROM prod.bronze.raw_orders LIMIT 5").display()
+except Exception as e:
+    print("Expected failure — missing USE SCHEMA on prod.bronze:")
+    print(str(e)[:400])
+```
+**Answer:** No — `SELECT` alone is not sufficient without `USE CATALOG` on `prod` and `USE SCHEMA` on `prod.bronze` also being granted. Fix it:
+```python
+spark.sql("GRANT USE SCHEMA ON SCHEMA prod.bronze TO `analysts`")
+# Now the full chain is complete: USE CATALOG (Step 3) + USE SCHEMA (this) + SELECT (4a) = access works
+```
 
-# Check the effective grants on the denied table
+### 4b. Confirm there's no `DENY` to fall back on
+```python
+# This statement is intentionally NOT valid for a Unity Catalog object —
+# DENY only applies to the legacy hive_metastore catalog:
+# spark.sql("DENY SELECT ON TABLE prod.hr.salaries TO `analysts`")   # DO NOT RUN — will fail on a UC object
+
 spark.sql("SHOW GRANTS ON TABLE prod.hr.salaries").display()
 ```
-
-### 4b. Verify DENY appears alongside GRANT
-
-```python
-# The table should show both the DENY and the inherited GRANT from catalog
-grants_sensitive = spark.sql("SHOW GRANTS ON TABLE prod.hr.salaries")
-grants_sensitive.display()
-```
-
-**What to observe:** DENY appears as a distinct privilege entry. Even though `all_employees` has SELECT on `prod` (catalog), the DENY on `prod.hr.salaries` takes precedence for that specific table.
-
-### 4c. Test with a user in multiple groups
-
-If you are in multiple groups (one granted, one denied), verify access:
-
-```python
-# Current user — check which groups they belong to
-user_groups = spark.sql("SELECT is_member('groups/analysts') as in_analysts")
-user_groups.display()
-```
+**What to observe:** the only tools you have to remove or restrict access on a UC object are `REVOKE`, restructuring which schema/catalog something lives in, or row filters/column masks (Day 19). If a colleague's notes or a quiz question shows `DENY` being used against a Unity Catalog table, that's the same error this lab just corrected.
 
 ---
 
-## Step 5 — Verify Inheritance Behavior
-
-**Objective:** Confirm that catalog-level grants flow to all schemas and tables.
-
-### 5a. Grant USAGE on catalog only — verify schema access works
+## Step 5 — Verify Forward-Looking Inheritance
 
 ```python
-# This is implicit if USAGE on catalog is granted
-# Check: can you list schemas in prod?
-spark.sql("SHOW SCHEMAS IN prod").display()
+# Grant at schema level
+spark.sql("GRANT SELECT ON SCHEMA prod.sales TO `analysts`")
+
+# Create a brand-new table AFTER the grant
+spark.sql("CREATE TABLE IF NOT EXISTS prod.sales.new_table (id INT, val STRING)")
+
+# Does analysts have SELECT on it without any new GRANT statement?
+spark.sql("SHOW GRANTS ON TABLE prod.sales.new_table").display()
 ```
+**What to observe:** the schema-level grant applies automatically to `new_table` even though it didn't exist when the `GRANT` ran — this is the forward-looking inheritance behavior. No re-grant needed.
 
-### 5b. Without USAGE on catalog — verify failure scenario
-
-If your user has explicit grants at schema level but NOT at catalog level:
-
+### 5a. Revoke scoping
 ```python
-# Attempt to access a schema in a catalog you don't have USAGE on
-# (replace catalog_name with one you may not have access to)
-try:
-    result = spark.sql("SHOW TABLES IN restricted_catalog.dont_read")
-    result.display()
-except Exception as e:
-    print("Expected error — no USAGE on catalog:")
-    print(str(e)[:300])
+spark.sql("GRANT SELECT ON TABLE prod.sales.customers TO `analysts`")   # separate, explicit table-level grant
+spark.sql("REVOKE SELECT ON SCHEMA prod.sales FROM `analysts`")          # revoke the schema-level grant only
+
+spark.sql("SHOW GRANTS ON TABLE prod.sales.customers").display()
 ```
-
-**What to observe:** Without USAGE on the catalog, traversal to the schema fails — even if the user has SELECT on the schema directly. Catalog-level USAGE is a prerequisite.
-
-### 5c. Revoke and re-grant to observe behavior
-
-```python
-# Syntax only — requires admin
-# Revoke a previously granted privilege
-spark.sql("""
-    REVOKE SELECT ON SCHEMA prod.sales
-    FROM `user:analyst@example.com`
-""")
-
-# Verify the revoke worked
-spark.sql("SHOW GRANTS ON SCHEMA prod.sales").display()
-```
+**Predict then verify:** does `analysts` still have `SELECT` on `customers` after the schema-level revoke?
+**Answer:** Yes — the explicit table-level grant is a separate grant record and survives a revoke issued at a different (schema) level.
 
 ---
 
-## Step 6 — Service Principal ACL Configuration
-
-**Objective:** Set up a pipeline service account with minimal privileges.
-
-### 6a. Create a service principal (syntax — account admin required)
+## Step 6 — Service Principal Least-Privilege Configuration
 
 ```python
-# Requires account-level permissions
-spark.sql("""
-    CREATE SERVICE PRINCIPAL IF NOT EXISTS pipeline_sp
-    COMMENT 'Production ETL pipeline service account'
-""")
+# Read-only across prod, write access limited to staging
+spark.sql("GRANT USE CATALOG ON CATALOG prod TO `pipeline-sp`")
+spark.sql("GRANT USE SCHEMA, SELECT ON CATALOG prod TO `pipeline-sp`")
+spark.sql("GRANT USE SCHEMA, CREATE TABLE, MODIFY ON SCHEMA prod.staging TO `pipeline-sp`")
+
+spark.sql("SHOW GRANTS `pipeline-sp` ON CATALOG prod").display()
+spark.sql("SHOW GRANTS `pipeline-sp` ON SCHEMA prod.staging").display()
 ```
-
-### 6b. Grant minimal privileges to service principal
-
-```python
-# Read-only access for monitoring
-spark.sql("""
-    GRANT SELECT ON CATALOG prod TO service-principal:pipeline-sp-id
-""")
-
-# Write access only to staging schema
-spark.sql("""
-    GRANT USAGE ON CATALOG prod TO service-principal:pipeline-sp-id
-""")
-spark.sql("""
-    GRANT MODIFY ON SCHEMA prod.staging TO service-principal:pipeline-sp-id
-""")
-spark.sql("""
-    GRANT CREATE TABLE ON SCHEMA prod.staging TO service-principal:pipeline-sp-id
-""")
-```
-
-### 6c. Verify the service principal's grants
-
-```python
-# Show all grants for the service principal
-sp_grants = spark.sql("SHOW GRANTS FOR service-principal:pipeline-sp-id")
-sp_grants.display()
-```
-
-**What to observe:** Service principals have narrow grants — SELECT on prod (read everything) but MODIFY only on staging (write to staging only). This follows the least-privilege principle.
+**What to observe:** the service principal has broad read (`SELECT` at catalog level, cascading) but write (`MODIFY`, `CREATE TABLE`) scoped to only `staging` — the standard least-privilege pattern for a production ETL identity, and the correct answer whenever a scenario asks for a pipeline account that should "read everything, write only to its own landing zone."
 
 ---
 
-## Step 7 — Compare Workspace ACLs vs Unity Catalog ACLs
+## Step 7 — Workspace ACLs vs. Unity Catalog ACLs
 
-**Objective:** Understand which objects use which ACL system.
-
-### 7a. Unity Catalog-managed objects
-
+### 7a. UC-managed objects — queryable via SQL
 ```python
-# These objects use Unity Catalog ACLs
-# Tables, schemas, catalogs, volumes
-uc_objects = spark.sql("""
-    SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
-    FROM information_schema.tables
-    WHERE TABLE_CATALOG IN ('prod', 'main')
+spark.sql("""
+    SELECT table_catalog, table_schema, table_name, table_type
+    FROM prod.information_schema.tables
     LIMIT 20
-""")
-uc_objects.display()
+""").display()
 ```
 
-### 7b. Workspace ACL objects (not directly queryable in SQL)
+### 7b. Workspace-managed objects — not queryable via GRANT/SHOW GRANTS SQL
+Notebooks, jobs, clusters, dashboards, and legacy MLflow experiments use **workspace permissions**, set via:
+- Workspace UI → object → **Permissions** tab, or
+- REST API: `PATCH /api/2.0/permissions/{request_object_type}/{request_object_id}`
 
-Notebooks and workspace objects use workspace-level permissions set via:
-- Workspace UI → right-click → Permissions
-- Workspace API `PATCH /api/2.0/workspace/permissions`
+There is no SQL `GRANT`/`SHOW GRANTS` equivalent for these — that's the core distinction to internalize. A user can have full workspace "Can Manage" on a notebook and still get an access-denied error the moment that notebook's code touches a UC table it has no grant on.
 
-**Key distinction:**
-- Unity Catalog ACLs: `GRANT SELECT ON TABLE ... TO ...`
-- Workspace ACLs: Permissions set per workspace object via workspace permissions UI
-
-### 7c. External locations and credentials
-
+### 7c. External locations and credentials (admin-only, syntax practice)
 ```python
-# Show external locations (requires admin)
 try:
-    locations = spark.sql("SHOW EXTERNAL LOCATIONS")
-    locations.display()
+    spark.sql("SHOW EXTERNAL LOCATIONS").display()
 except Exception as e:
-    print("External locations require admin access or are unavailable in CE")
-
-# Show credentials
-try:
-    creds = spark.sql("SHOW CREDENTIALS")
-    creds.display()
-except Exception as e:
-    print("Credentials require admin access or are unavailable in CE")
+    print("Requires admin / not available on this tier:", str(e)[:200])
 ```
 
 ---
 
-## Step 9 — Data Discoverability: Metadata, Comments, and Tags
+## Step 8 — Data Discoverability: Metadata, Comments, and Tags
 
-**Objective:** Add and query metadata to make data self-documenting.
-
-### 9a. View existing descriptions via DESCRIBE
-
+### 8a. View existing metadata
 ```python
-# View catalog description
 spark.sql("DESCRIBE CATALOG prod").display()
-
-# View schema description
 spark.sql("DESCRIBE SCHEMA prod.sales").display()
-
-# View table description
 spark.sql("DESCRIBE TABLE prod.sales.customers").display()
-
-# View column-level descriptions
 spark.sql("DESCRIBE TABLE prod.sales.customers COLUMN email").display()
+spark.sql("DESCRIBE DETAIL prod.sales.customers").display()   # includes TBLPROPERTIES, format, size
 ```
 
-### 9b. Query information_schema for all commented objects
-
+### 8b. Query information_schema for governance gaps
 ```python
-# Find all tables in prod that have descriptions
-commented_tables = spark.sql("""
+spark.sql("""
     SELECT table_catalog, table_schema, table_name, comment
-    FROM information_schema.tables
-    WHERE table_catalog = 'prod'
-      AND comment IS NOT NULL
+    FROM prod.information_schema.tables
+    WHERE comment IS NULL OR comment = ''
     ORDER BY table_schema, table_name
-""")
-commented_tables.display()
-
-# Find columns with descriptions
-commented_cols = spark.sql("""
-    SELECT table_catalog, table_schema, table_name, column_name, comment
-    FROM information_schema.columns
-    WHERE comment IS NOT NULL
-    ORDER BY table_catalog, table_schema, table_name
-    LIMIT 30
-""")
-commented_cols.display()
+""").display()
+print("Rows returned = tables missing descriptions = governance gaps to close")
 ```
 
-### 9c. Add descriptions to a table (requires admin/owner)
-
+### 8c. Add comments and tags
 ```python
-# Add table-level comment
 spark.sql("""
     ALTER TABLE prod.sales.customers
     SET COMMENT 'All customer records — updated nightly from CRM system'
 """)
-
-# Add column-level comments
 spark.sql("""
     ALTER TABLE prod.sales.customers
-    ALTER COLUMN email SET COMMENT 'Customer email — PII, see data team for access'
+    ALTER COLUMN email SET COMMENT 'Customer email — PII, masked for analysts'
 """)
+spark.sql("ALTER TABLE prod.sales.customers SET TAGS ('pii' = 'true', 'department' = 'sales')")
 
 spark.sql("""
-    ALTER TABLE prod.sales.customers
-    ALTER COLUMN created_at SET COMMENT 'Account creation timestamp — UTC'
-""")
-
-# Verify with DESCRIBE
-spark.sql("DESCRIBE TABLE prod.sales.customers").display()
+    SELECT * FROM prod.information_schema.table_tags WHERE tag_name = 'pii'
+""").display()
 ```
 
-### 9d. Add tags for data classification
-
+### 8d. 💥 Break it on purpose: tags/comments lost on clone
 ```python
-# Tag a PII table
+spark.sql("DEEP CLONE prod.sales.customers TO prod.staging.customers_clone")   # or CREATE TABLE ... AS SELECT
+
 spark.sql("""
-    ALTER TABLE prod.sales.customers
-    SET TAG pii = 'true'
-""")
-
-# Set multiple tags at once
-spark.sql("""
-    ALTER TABLE prod.sales.customers
-    SET TAGS (gdpr_classification = 'personal', department = 'crm')
-""")
-
-# Query tables by tag (if tags are available in your workspace config)
-try:
-    tagged_tables = spark.sql("""
-        SELECT * FROM information_schema.table_tags
-        WHERE tag_name = 'pii'
-    """)
-    tagged_tables.display()
-except Exception as e:
-    print("Tags may not be available in this workspace config:")
-    print(str(e)[:200])
+    SELECT * FROM prod.information_schema.table_tags
+    WHERE table_name = 'customers_clone'
+""").display()
 ```
-
-### 9e. View table details (properties + structure)
-
-```python
-# DESCRIBE DETAIL shows schema + table properties
-spark.sql("DESCRIBE DETAIL prod.sales.customers").display()
-
-# This includes: format, size, numFiles, partitionInfo, and custom TBLPROPERTIES
-```
-
-### 9f. Build a data catalog query (discoverability exercise)
-
-```python
-# Find all prod tables that lack descriptions (gaps in governance)
-missing_descriptions = spark.sql("""
-    SELECT
-        table_catalog,
-        table_schema,
-        table_name,
-        table_type,
-        comment
-    FROM information_schema.tables
-    WHERE table_catalog = 'prod'
-      AND (comment IS NULL OR comment = '')
-    ORDER BY table_schema, table_name
-    LIMIT 20
-""")
-missing_descriptions.display()
-print("Tables missing descriptions = governance gaps to address")
-```
-
-### Break it on purpose: Tags lost on clone
-
-```python
-# Create a table with tags
-# spark.sql("ALTER TABLE prod.staging.clone_test SET TAG pii = 'true'")
-
-# Deep clone — tags are NOT copied
-# spark.sql("DEEP CLONE prod.sales.customers prod.staging.clone_test")
-
-# Verify: tags are gone after clone
-# spark.sql("SELECT * FROM information_schema.table_tags WHERE table_name = 'clone_test'")
-# Expected: empty result — tags must be reapplied after clone
-```
-
-**What to observe:** Tags survive within Unity Catalog but are NOT preserved through DEEP CLONE or CTAS. Comments are also not copied. The clone creates a new table with no metadata. This is a common governance gap — reapply tags/comments programmatically after cloning.
+**Predict then verify:** does the cloned table show the `pii`/`department` tags?
+**Answer:** No — empty result. Tags and comments are **not** preserved by `DEEP CLONE` or `CTAS`; only the structure/data is copied. This is a real governance gap teams hit in production — any pipeline step that clones or CTAS-es a sensitive table must explicitly reapply tags/comments as part of that same step, or the clone silently loses its PII classification.
 
 ---
 
-## Step 8 — Break It on Purpose: Common Permission Errors
+## Step 9 — Common Permission-Error Scenarios
 
-**Objective:** Observe common permission failure scenarios.
-
-### 8a. Missing USAGE on catalog
-
+### 9a. Missing USE CATALOG
 ```python
-# Try to access a table in a catalog you don't have USAGE on
 try:
-    spark.sql("SELECT * FROM system.bogus_catalog.does_not_exist LIMIT 1").display()
+    spark.sql("SELECT * FROM some_catalog_you_cannot_use.some_schema.some_table LIMIT 1").display()
 except Exception as e:
-    print("Error without USAGE on catalog:")
+    print("Expected error — no USE CATALOG:")
     print(str(e)[:400])
 ```
 
-### 8b. Trying to grant without admin
-
+### 9b. Attempting to grant without sufficient rights
 ```python
-# Non-admin: attempt to grant — should fail
 try:
-    spark.sql("GRANT SELECT ON TABLE prod.sales TO user:random@example.com")
+    spark.sql("GRANT SELECT ON TABLE prod.sales.customers TO `random_group`")
 except Exception as e:
-    print("Expected: permission denied for non-admin grant attempt")
+    print("Expected — you need to be owner, have MANAGE, or be admin to grant:")
     print(str(e)[:300])
 ```
 
-### 8c. Modifying a table without MODIFY privilege
-
+### 9c. Writing without MODIFY
 ```python
-# Try to INSERT without MODIFY
 try:
-    spark.sql("INSERT INTO prod.sales SELECT 1 as id, 'test' as name")
+    spark.sql("INSERT INTO prod.sales.customers VALUES (999, 'test@example.com')")
 except Exception as e:
-    print("Expected: no MODIFY privilege")
+    print("Expected — no MODIFY privilege:")
     print(str(e)[:300])
 ```
 
 ---
 
-## Stretch Task: Build a Complete ACL Configuration for a New Schema
+## Stretch Task: Design a Full ACL Configuration for a New Schema
 
-Design and (syntax-)document the ACL configuration for a new `prod.analytics` schema:
+Scenario: design (write out the SQL, execute what you can) grants for `prod.analytics`:
+- `analysts_group` — read-only across all of `prod`.
+- `etl_pipeline_sp` — read all of `prod`, write only to `prod.analytics`.
+- `data_science_team` — read `prod.analytics` only (not the rest of `prod`).
+- `hr_admin_group` — full control of `prod.hr` only, no access elsewhere.
 
-```python
-# Scenario:
-# - analysts_group: read-only access to all prod tables
-# - etl_pipeline_sp: read all prod, write only to prod.analytics
-# - data_science_team: read prod.analytics only
-# - hr_data_admin: full access to prod.hr schema only
+```sql
+-- analysts_group: read-only everywhere
+GRANT USE CATALOG ON CATALOG prod TO `analysts_group`;
+GRANT USE SCHEMA, SELECT ON CATALOG prod TO `analysts_group`;
 
-# 1. Analysts: read-only catalog
-# GRANT SELECT ON CATALOG prod TO `groups/analysts_group`;
+-- etl_pipeline_sp: read everywhere, write only to analytics
+GRANT USE CATALOG ON CATALOG prod TO `etl_pipeline_sp`;
+GRANT USE SCHEMA, SELECT ON CATALOG prod TO `etl_pipeline_sp`;
+GRANT USE SCHEMA, CREATE TABLE, MODIFY ON SCHEMA prod.analytics TO `etl_pipeline_sp`;
 
-# 2. ETL pipeline: read all + write analytics
-# GRANT USAGE ON CATALOG prod TO service-principal:etl-pipeline;
-# GRANT SELECT ON CATALOG prod TO service-principal:etl-pipeline;
-# GRANT MODIFY ON SCHEMA prod.analytics TO service-principal:etl-pipeline;
-# GRANT CREATE TABLE ON SCHEMA prod.analytics TO service-principal:etl-pipeline;
+-- data_science_team: analytics schema only — note it must NOT get USE CATALOG-level SELECT,
+-- only schema-scoped access, to avoid leaking the rest of prod
+GRANT USE CATALOG ON CATALOG prod TO `data_science_team`;
+GRANT USE SCHEMA, SELECT ON SCHEMA prod.analytics TO `data_science_team`;
 
-# 3. Data science: read analytics only
-# GRANT USAGE ON CATALOG prod TO `groups/data_science`;
-# GRANT SELECT ON SCHEMA prod.analytics TO `groups/data_science`;
-
-# 4. HR admin: full access to hr schema only
-# GRANT USAGE ON CATALOG prod TO `groups/hr_admin`;
-# GRANT ALL PRIVILEGES ON SCHEMA prod.hr TO `groups/hr_admin`;
+-- hr_admin_group: full control of hr only
+GRANT USE CATALOG ON CATALOG prod TO `hr_admin_group`;
+GRANT ALL PRIVILEGES ON SCHEMA prod.hr TO `hr_admin_group`;
 ```
+**Think it through:** since there's no `DENY`, how do you guarantee `data_science_team` genuinely cannot see `prod.hr` or `prod.sales`? (Answer: by never granting them anything beyond `USE CATALOG` + the one schema — the absence of a grant *is* the restriction, since UC is additive-only.)
 
 ---
 
 ## Lab Checklist
 
-- [ ] Explored Unity Catalog three-level hierarchy (catalog → schema → table)
-- [ ] Used SHOW GRANTS ON TABLE/SCHEMA/CATALOG to inspect ACLs
-- [ ] Used SHOW GRANTS FOR to see all grants for a principal
-- [ ] Understood GRANT syntax (catalog, schema, table levels)
-- [ ] Observed DENY precedence over GRANT
-- [ ] Verified catalog USAGE is required before accessing schemas
-- [ ] Set up minimal service principal ACL configuration
-- [ ] Distinguished Unity Catalog ACLs from workspace ACLs
-- [ ] Triggered common permission errors (missing USAGE, no MODIFY)
-- [ ] Used DESCRIBE/DESCRIBE DETAIL to view existing metadata
-- [ ] Queried information_schema.tables and information_schema.columns for descriptions
-- [ ] Added COMMENT to a table and column (syntax)
-- [ ] Set tags on a table for classification
-- [ ] Identified tables missing descriptions via information_schema
-- [ ] (Stretch) Documented complete ACL configuration for a new schema
+- [ ] Explored the three-level UC hierarchy (catalog → schema → table)
+- [ ] Used `SHOW GRANTS ON <object>` correctly (object is required — no bare "show all for me")
+- [ ] Reproduced the missing-traversal-link failure and fixed it
+- [ ] Confirmed `DENY` does not work against a Unity Catalog object
+- [ ] Verified forward-looking inheritance on a newly created table
+- [ ] Verified a schema-level revoke doesn't remove a separate table-level grant
+- [ ] Configured least-privilege service principal grants
+- [ ] Distinguished workspace ACLs from Unity Catalog ACLs
+- [ ] Added comments, tags, and `TBLPROPERTIES`; queried `information_schema` for gaps
+- [ ] Observed tags/comments not surviving `DEEP CLONE`
+- [ ] Triggered and interpreted common permission errors
+- [ ] (Stretch) Designed a full multi-group ACL configuration using only grants (no deny)
 
 ---
 
 ## Cross-References
-
-- Day 17: Row filters and column masks build on these ACL concepts
-- Day 19: PII anonymization and data purging with UC
-- Day 20: Delta Sharing permission management
-- Day 21: System tables auditing ACL changes
+- Day 19: Row filters and column masks — enforced *after* the ACL check on top of whatever `SELECT` allows through.
+- Day 20: Delta Sharing / Lakehouse Federation permissions (`CREATE SHARE`, `USE CONNECTION`).
+- Day 21: `system.access.audit` for auditing grant/revoke history over time.
+- Day 2 / 25: Service principal `run_as` pattern in Declarative Automation Bundles.
