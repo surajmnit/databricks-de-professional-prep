@@ -76,11 +76,11 @@ Each day covers specific exam objectives from the official July 3, 2026 Exam Gui
 
 - [ ] Day 1 — Exam Strategy + Architecture + Spark Basics
 - [x] Day 2 — Python Dev + Declarative Automation Bundles
-- [ ] Day 3 — SQL Transformations + Testing
-- [ ] Day 4 — Spark Architecture Deep-Dive
-- [ ] Day 5 — Spark Execution: DAG, Stages, Tasks
-- [ ] Day 6 — Spark Shuffle
-- [ ] Day 7 — Spark Memory + OOM
+- [x] Day 3 — SQL Transformations + Testing
+- [x] Day 4 — Spark Architecture Deep-Dive
+- [x] Day 5 — Spark Execution: DAG, Stages, Tasks
+- [x] Day 6 — Spark Shuffle
+- [x] Day 7 — Spark Memory + OOM
 - [ ] Day 8 — Spark UI + Query Profile
 - [ ] Day 9 — Delta Lake Fundamentals
 - [ ] Day 10 — MERGE, CDC, SCD + CDF
@@ -91,9 +91,9 @@ Each day covers specific exam objectives from the official July 3, 2026 Exam Gui
 - [ ] Day 15 — Lakeflow Declarative Pipelines
 - [ ] Day 16 — Streaming Tables vs Materialized Views
 - [ ] Day 17 — Data Transformation + Cleansing
-- [ ] Day 18 — Unity Catalog ACLs + Permissions
+- [x] Day 18 — Unity Catalog ACLs + Permissions
 - [ ] Day 19 — Security + Compliance + PII
-- [ ] Day 20 — Delta Sharing + Lakehouse Federation
+- [x] Day 20 — Delta Sharing + Lakehouse Federation
 - [ ] Day 21 — Monitoring: System Tables
 - [ ] Day 22 — Alerting
 - [ ] Day 23 — Debugging + Troubleshooting

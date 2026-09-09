@@ -160,3 +160,149 @@
 | Cluster-scoped library | Library installed on all cluster nodes; required for UDF access | 2 |
 | DAB --force flag | Overwrites existing resources during databricks bundle deploy | 2 |
 | Py4J serialization | Row-by-row serialization used by Python UDFs; slower than Arrow | 2 |
+
+
+---
+
+## Day 3 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Window function | SQL function over row set via OVER clause; does not collapse rows | 3 |
+| ROWS vs RANGE | ROWS=physical row count; RANGE=logical value grouping; differ with duplicates | 3 |
+| LEFT SEMI join | Left rows where key exists in right; equivalent to IN subquery | 3 |
+| LEFT ANTI join | Left rows where key does NOT exist in right; equivalent to NOT IN | 3 |
+| Broadcast join | Small table sent to all executors; avoids shuffle | 3 |
+| GROUPING SETS | Multiple aggregation levels in one query | 3 |
+| ROLLUP | Hierarchical subtotals: (a,b) > (a) > grand total | 3 |
+| CUBE | All combinations: (a,b) > (a) > (b) > grand total | 3 |
+| PIVOT | Rotate rows to columns | 3 |
+| UNPIVOT | Rotate columns to rows (LATERAL VIEW EXPLODE MAP) | 3 |
+| DataFrame.transform | Chainable transformation method; each function independently testable | 3 |
+| assertDataFrameEqual | Spark built-in order-independent DataFrame comparison (checkRowOrder=False) | 3 |
+| assertSchemaEqual | Spark built-in schema comparison | 3 |
+| Salted join | Handle skewed joins by replicating rows with salt keys | 3 |
+| checkRowOrder | Parameter for assertDataFrameEqual; True=order-sensitive, False=order-independent | 3 |
+
+
+---
+
+## Day 4 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| SparkContext | Entry point to Spark; runs on driver; builds DAG; schedules tasks | 4 |
+| Stage | Set of tasks with no shuffle boundary between them | 4 |
+| Task | Smallest unit of work; one per partition | 4 |
+| Shuffle boundary | Network data movement between stages; creates new Stage | 4 |
+| Narrow transformation | No shuffle (filter, withColumn, select) | 4 |
+| Wide transformation | Requires shuffle (groupBy, join, repartition, sort, distinct) | 4 |
+| Spark UI | Driver-hosted web UI at driver:4040; shows Jobs/Stages/Tasks | 4 |
+| spark.sql.shuffle.partitions | Default partition count for shuffle operations (200) | 4 |
+| spark.executor.heartbeatInterval | Frequency of executor heartbeats to driver (default 10s) | 4 |
+| spark.stage.maxAttempts | Max retries per stage (default 4) | 4 |
+| spark.driver.maxResultSize | Max size of collect() result at driver (default 1GB) | 4 |
+| Data skew | Uneven partition distribution; one partition dominates | 4 |
+| Dynamic allocation | Auto add/remove executors based on workload | 4 |
+
+
+---
+
+## Day 5 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Lazy evaluation | Transformations recorded but not executed until Action | 5 |
+| Action | Operation that triggers Spark execution (collect, count, write, etc.) | 5 |
+| Transformation | Operation that builds the DAG (filter, groupBy, etc.) | 5 |
+| Catalyst Optimizer | Spark query planning engine; transforms logical to physical plan | 5 |
+| Physical plan | How Spark will execute the query (operators, order) | 5 |
+| Exchange | Shuffle operator in physical plan = new Stage boundary | 5 |
+| Whole-stage codegen | Collapses operators into one generated function;  prefix | 5 |
+| BroadcastExchange | Shuffle operator for small table broadcast | 5 |
+| SortMergeJoin | Default join strategy for large tables | 5 |
+| Column pruning | Catalyst removes unused columns from read | 5 |
+| Predicate pushdown | Catalyst moves filters closer to data source | 5 |
+| Filter pushdown | Filter conditions applied at scan time, not post-scan | 5 |
+| HashAggregate | Hash-based aggregation (used for groupBy when applicable) | 5 |
+| SortAggregate | Sort-based aggregation (used when hash not applicable) | 5 |
+
+
+---
+
+## Day 6 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Shuffle | Data movement between executors; most expensive Spark operation | 6 |
+| Shuffle write | Map stage output written to local disk before reduce stage | 6 |
+| Shuffle read | Reduce stage reads shuffle output from map task files | 6 |
+| Exchange | Physical plan operator representing shuffle boundary | 6 |
+| HashPartitioner | Default partitioner for groupBy; keys distributed by hash | 6 |
+| RangePartitioner | Used for sort; distributes by range boundaries | 6 |
+| Shuffle spill | Data written to disk because executor memory insufficient for sort | 6 |
+| Local read | Reduce task reads shuffle data from same executor (no network) | 6 |
+| Remote read | Reduce task reads shuffle data from other executors (network cost) | 6 |
+| BroadcastHashJoin | Join using broadcast table; no shuffle on large table | 6 |
+| SortMergeJoin | Default join for large tables; shuffle on both sides | 6 |
+| AQE skew join | Auto-splits skewed partitions into smaller sub-partitions | 6 |
+| autoBroadcastJoinThreshold | Max table size for auto-broadcast (default 10MB) | 6 |
+| Salted join | Technique to handle skew: replicate small table rows by salt key | 6 |
+| Shuffle partition count | spark.sql.shuffle.partitions (default 200); controls reduce parallelism | 6 |
+
+
+---
+
+## Day 7 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Execution Memory | Portion of Spark memory for shuffle sort, hash join, aggregation buffers | 7 |
+| Storage Memory | Portion of Spark memory for cached DataFrames and broadcast variables | 7 |
+| Unified Memory | Spark 1.6+ model where execution and storage share a pool; execution cannot evict storage | 7 |
+| Shuffle Spill | Data written to disk when execution memory is insufficient | 7 |
+| Python Worker Process | Separate subprocess for Python UDFs; memory from spark.python.worker.memory | 7 |
+| MEMORY_AND_DISK | Cache level: memory first, spill to disk if needed | 7 |
+| MEMORY_ONLY | Cache level: memory only, recompute if evicted | 7 |
+| MEMORY_ONLY_SER | Cache level: serialized in memory, less memory but more CPU | 7 |
+| LRU Eviction | Storage memory evicts least recently used cached data when full | 7 |
+| GC Pressure | Excessive garbage collection pauses from too many short-lived objects | 7 |
+| spark.memory.fraction | Fraction of executor heap for Spark (default 0.6) | 7 |
+| spark.python.worker.memory | Per-worker Python subprocess heap (default 512MB) | 7 |
+| spark.driver.maxResultSize | Max size for collect() results at driver (default 1GB) | 7 |
+| SparkStorageLevel | Enum controlling cache persistence: MEMORY_ONLY, MEMORY_AND_DISK, etc. | 7 |
+
+---
+
+## Day 7 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Unified memory | Execution and storage share a pool; execution can evict storage | 7 |
+| Execution memory | Memory for shuffles, sorts, joins, hash aggregation | 7 |
+| Storage memory | Memory for cache, broadcasts | 7 |
+| Shuffle spill | Data written to disk because executor memory insufficient for sort/agg | 7 |
+| Python worker memory | Off-heap memory for Python UDF subprocess (spark.python.worker.memory) | 7 |
+| spark.driver.maxResultSize | Max size of collect() result at driver (default 1GB) | 7 |
+| spark.memory.fraction | Fraction of executor heap for execution+storage (0.6) | 7 |
+| spark.memory.storageFraction | Fraction of memory fraction for storage (0.5) | 7 |
+| GC pressure | Frequent GC pauses affecting executor performance | 7 |
+| Arrow | Columnar format for JVM-to-Python data transfer; used by Pandas UDFs | 7 |
+| Cache bloat | Executor OOM from cached data filling storage memory, starving execution | 7 |
+| unpersist() | Explicitly frees cached DataFrame memory | 7 |
+
+
+---
+
+## Day 20 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Delta Sharing | Open protocol for sharing live Delta tables with any platform | 20 |
+| D2D Sharing | Databricks-to-Databricks sharing via Unity Catalog | 20 |
+| D2O Sharing | Databricks-to-Other sharing via open REST protocol | 20 |
+| OPEN Recipient | Delta Sharing recipient for non-Databricks platforms | 20 |
+| Account Recipient | Delta Sharing recipient for Databricks workspaces | 20 |
+| Lakehouse Federation | Query external databases from Databricks via Unity Catalog | 20 |
+| External Connection | Unity Catalog object with credentials to external DB | 20 |
+| Federated Query | Query executed on source DB; only results returned | 20 |
