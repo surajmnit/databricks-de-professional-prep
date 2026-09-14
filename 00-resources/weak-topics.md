@@ -132,7 +132,7 @@
 | Q9 | Join ordering / early filter | Medium | Filter before join reduces join volume |
 | Q10 | PIVOT vs UNPIVOT | Medium | PIVOT=rows to cols; UNPIVOT=cols to rows |
 | Q11 | Skew join / salted join | High | AQE handles automatically; manual fix is salted join |
-| Q12 | Control flow in pipelines | Medium | Classic jobs=Python if/else; Lakeflow=declarative operators |
+| Q12 | Control flow in pipeline contexts | Medium | Classic jobs=Python if/else; Lakeflow=declarative operators |
 
 
 ---
@@ -213,26 +213,6 @@
 | Q10 | Broadcast storage memory | Low | Each executor holds full broadcast in storage memory |
 | Q11 | Cache only reused DataFrames | Medium | One-time DataFrames should not be cached |
 | Q12 | SER memory/CPU trade-off | Medium | SER uses less memory but more CPU for deserialization |
-
-
----
-
-## Day 7 Quiz Analysis
-
-| Q# | Topic | Priority | Key Insight |
-|---|---|---|---|
-| Q1 | Unified memory eviction rules | Medium | Execution CAN evict Storage; Storage CANNOT evict Execution |
-| Q2 | Python UDF off-heap memory | Medium | Python OOM = executor failure but JVM heap looks fine |
-| Q3 | spark.driver.maxResultSize | Easy | Limits collect() result, not driver.memory |
-| Q4 | Cache bloat OOM mechanism | Medium | Cache fills storage, execution starved → OOM |
-| Q5 | Shuffle spill vs shuffle write | Low | Spill = overflow, not normal shuffle |
-| Q6 | Spill reduction via partitions | Medium | More partitions = smaller per-partition data |
-| Q7 | GC pressure and Pandas UDFs | Medium | Pandas UDFs reduce object churn and GC |
-| Q8 | Memory fraction calculation | Hard | (64 - 0.3) x 0.6 = ~38.1 GB |
-| Q9 | Driver vs executor failure mode | Medium | Lost task = executor; driver disconnected = driver |
-| Q10 | When to call unpersist() | Easy | Spark auto-evicts under pressure but not proactively |
-| Q11 | Python worker memory fix | Medium | spark.python.worker.memory, not executor.memory |
-| Q12 | Python UDF vs Pandas UDF memory | Easy | Python = off-heap subprocess; Pandas = JVM heap via Arrow |
 
 
 ---

@@ -327,6 +327,36 @@ This is separate from JVM heap. Increase when using native libraries or seeing o
 
 ---
 
+## Part 8 — Production Memory Configuration Checklist
+
+```python
+# Key memory configurations for production workloads
+
+# 1. Executor memory (set at cluster level, not here)
+# spark.executor.memory: "64g" (example)
+
+# 2. Shuffle partitions (adjust for data size)
+spark.conf.set("spark.sql.shuffle.partitions", "400")  # For large joins/aggregations
+
+# 3. Enable AQE (default true, confirm)
+spark.conf.set("spark.sql.adaptive.enabled", "true")
+spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
+spark.conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+
+# 4. Python worker memory (if using Python UDFs)
+spark.conf.set("spark.python.worker.memory", "2g")  # Default 512MB
+
+# 5. Driver max result size
+spark.conf.set("spark.driver.maxResultSize", "4g")  # Default 1GB
+
+# 6. Memory fraction (careful — tuning)
+spark.conf.set("spark.memory.fraction", "0.6")  # Default — don't change unless you know what you're doing
+```
+
+This checklist is a quick pre-flight pass before shipping a memory-sensitive job to production: confirm shuffle partition count matches data volume (Day 6), confirm AQE is on, size Python worker memory if UDFs are involved, raise `maxResultSize` only if a bounded `collect()` genuinely needs it, and leave `spark.memory.fraction` at its default unless you have a specific, measured reason to change it.
+
+---
+
 ## Cross-References
 
 - **Day 4:** Architecture — Driver and Executor are the two memory contexts
