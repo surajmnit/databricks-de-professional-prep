@@ -290,6 +290,22 @@ print(f"Now slower than Python UDF: {broken_time > python_time}")
 
 This demonstrates that the performance advantage of Pandas UDFs comes from vectorization, not from the framework itself.
 
+**Break it on purpose (return type):** Try passing the bare class instead of an instance:
+
+```python
+from pyspark.sql.types import IntegerType
+
+try:
+    @pandas_udf(returnType=IntegerType)   # BROKEN: class, not instance — missing ()
+    def add_hundred_bad_type(value: pd.Series) -> pd.Series:
+        return value + 100
+except TypeError as e:
+    print("Expected TypeError — returnType must be an instantiated DataType or a DDL string:")
+    print(str(e)[:300])
+```
+
+**What to observe:** the failure happens immediately at UDF *definition* time, before any data is touched — this is the real return-type trap: always instantiate (`IntegerType()`), never pass the bare class.
+
 ---
 
 ## Step 3 — Diagnose Library Installation Issues
@@ -377,32 +393,45 @@ databricks bundle init
 # databricks.yml
 bundle:
   name: etl-project
-  target: dev
+
+variables:
+  node_type:
+    description: Worker node type for job clusters
+    default: Standard_D4s_v3
+  num_workers:
+    description: Number of workers for job clusters
+    default: 2
 
 targets:
   dev:
+    default: true
     workspace:
       host: https://your-workspace.cloud.databricks.com
-    default_clusters:
-      node_type_id: Standard_D4s_v3
+    variables:
       num_workers: 2
   prod:
     workspace:
       host: https://prod-workspace.cloud.databricks.com
-    default_clusters:
-      node_type_id: Standard_D8s_v3
+    variables:
+      node_type: Standard_D8s_v3
       num_workers: 6
 
 resources:
   jobs:
     bronze_job:
       name: ${bundle.target}-bronze-ingest
+      job_clusters:
+        - job_cluster_key: main
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: ${var.node_type}
+            num_workers: ${var.num_workers}
       tasks:
         - task_key: ingest_data
+          job_cluster_key: main
           notebook_task:
             notebook_path: /Workspace/Shared/etl_project/notebooks/bronze_ingest.py
           timeout_seconds: 1800
-          retry_on_timeout: true
           max_retries: 2
 
     silver_job:
@@ -413,7 +442,10 @@ resources:
             - task_key: ingest_data
           notebook_task:
             notebook_path: /Workspace/Shared/etl_project/notebooks/silver_transform.py
-          clusterless: true
+          # No job_cluster_key/new_cluster reference: in a serverless-enabled
+          # workspace this task runs on serverless compute automatically.
+          # There is no "clusterless: true" flag — omitting compute IS how you
+          # get serverless.
 ```
 
 ### 4c. Validate and deploy
@@ -532,6 +564,7 @@ print("Bronze ingestion complete")
 - [ ] Tested ETL functions via package import
 - [ ] Benchmarked Python UDF vs Pandas UDF
 - [ ] Observed Pandas UDF speedup from vectorization
+- [ ] Reproduced the `returnType` bare-class `TypeError` and fixed it
 - [ ] Verified notebook-scoped vs cluster-scoped library behavior
 - [ ] Created and validated a DAB via CLI
 - [ ] Deployed DAB to dev target

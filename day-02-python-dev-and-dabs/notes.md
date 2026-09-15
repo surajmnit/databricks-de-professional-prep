@@ -1,5 +1,7 @@
 # Day 2 — Python Development, Declarative Automation Bundles, Dependencies, and UDFs
 
+> ⚠️ **Correction notice:** This version fixes several issues found in an earlier draft: (1) the `databricks.yml` example had a corrupted key (mixed English/Chinese characters) and used fabricated fields (`clusterless: true`, a bare `default_clusters` block, `pipeline_type`/`channels`/`contents: .jsonnet`) that don't match the real Bundle or Lakeflow pipeline schema; (2) the Iterator-Style Pandas UDF code had a syntax error and was invoked incorrectly; (3) the Grouped Map Pandas UDF example used the deprecated `PandasUDFType.GROUPED_MAP` decorator with no mention of the current `applyInPandas` API; (4) `spark.databricks.cluster.profile` was cited as a fix for version-shadowing without verification; (5) the claim that Pandas UDFs should use `returnType=IntegerType` (the bare class) rather than `IntegerType()` (an instance) was **backwards** — both `udf()` and `pandas_udf()` require an instantiated `DataType` (or a DDL string); passing the bare class raises a `TypeError`. All five are corrected below.
+
 ## Exam Objectives (Exam Guide, July 2026)
 
 This day maps to **Section 1: Developing Code for Data Processing using Python and SQL — 22% of exam**
@@ -104,47 +106,61 @@ Declarative Automation Bundles are YAML-based project definitions that enable re
 
 ### The `databricks.yml` File
 
-This is the heart of a DAB:
+This is the heart of a DAB. Environment-specific compute is handled through **bundle variables**, not a bare per-target cluster block:
 
 ```yaml
 # databricks.yml
 bundle:
-  name: my-etl-project                     # Unique bundle name
-  target: dev                              # Environment target (dev, staging, prod)
+  name: my-etl-project
+
+variables:
+  node_type:
+    description: Worker node type for job clusters
+    default: Standard_D4s_v3
+  num_workers:
+    description: Number of workers for job clusters
+    default: 2
 
 targets:
   dev:
+    default: true
     workspace:
       host: https://dbc-xxxx-ondbx.cloud.databricks.com
-    default集群:                            # Compute for jobs
-      node_type_id: Standard_D4s_v3
-      num_workers: 4
+    variables:
+      num_workers: 2
   staging:
     workspace:
       host: https://dbc-yyyy-ondbx.cloud.databricks.com
-    default集群: single-node               # Override: use single node for staging
+    variables:
+      num_workers: 4
   prod:
     workspace:
       host: https://dbc-zzzz-ondbx.cloud.databricks.com
-    default_clusters:
-      node_type_id: Standard_D8s_v3
+    variables:
+      node_type: Standard_D8s_v3
       num_workers: 8
 ```
 
 ### Resources in a DAB
 
-A DAB can declare multiple resource types:
+A DAB can declare multiple resource types. Job clusters are defined once under `job_clusters` and referenced by tasks via `job_cluster_key` — variables let the same definition resolve to different sizes per target:
 
 ```yaml
 resources:
   jobs:
     bronze_ingest_job:
       name: ${bundle.target}-bronze-ingest
+      job_clusters:
+        - job_cluster_key: main
+          new_cluster:
+            spark_version: "15.4.x-scala2.12"
+            node_type_id: ${var.node_type}
+            num_workers: ${var.num_workers}
       tasks:
         - task_key: ingest
+          job_cluster_key: main
           notebook_task:
             notebook_path: ./notebooks/bronze_ingest.py
-          clusterless: true                  # Use serverless if available
 
     silver_transform_job:
       name: ${bundle.target}-silver-transform
@@ -155,21 +171,26 @@ resources:
           notebook_task:
             notebook_path: ./notebooks/silver_transform.py
           timeout_seconds: 3600
-          retry_on_timeout: true
           max_retries: 2
+          # No job_cluster_key/new_cluster block at all: in a serverless-enabled
+          # workspace, a notebook task with no compute reference runs on
+          # serverless compute automatically. There is no "clusterless: true"
+          # flag — serverless is the absence of a cluster reference, not a flag.
 
   pipelines:
     live_etl_pipeline:
       name: ${bundle.target}-live-etl
       target: my_schema
-      pipeline_type: triggered
-      configurations:
-        - spark.databricks.delta.autoOptimize.enabled: true
-      channels:
-        - beta
-      contents:
-        - source: ./pipelines/etl_pipeline.jsonnet
+      continuous: false
+      channel: CURRENT
+      libraries:
+        - notebook:
+            path: ./pipelines/etl_pipeline.py
+      configuration:
+        spark.databricks.delta.autoOptimize.enabled: "true"
 ```
+
+**Exam trap:** Don't confuse a job cluster (`new_cluster`, tied to one job run and torn down after) with a bundle *variable* (a placeholder resolved per target). Fields like `pipeline_type`, `channels` (plural), or a `.jsonnet` pipeline source aren't part of the real schema — Lakeflow pipeline libraries are declared as `notebook:` or `file:` entries, and `channel` is a single string (`CURRENT` or `PREVIEW`), not a list.
 
 ### DAB CLI Commands
 
@@ -219,7 +240,7 @@ databricks bundle deploy dev
 databricks bundle deploy prod
 ```
 
-**Exam question pattern:** "A team wants to promote their ETL pipeline from dev to prod with minimal changes. Which approach supports this?" Answer: DABs with environment targets — same bundle, different target configs.
+**Exam question pattern:** "A team wants to promote their ETL pipeline from dev to prod with minimal changes. Which approach supports this?" Answer: DABs with environment targets — same bundle, different target configs (and, where sizing differs, bundle variables overridden per target).
 
 ### DABs and CI/CD Integration
 
@@ -320,8 +341,7 @@ resources:
 **Problem: Package version conflict**
 - Symptom: `ImportError` or `AttributeError` at runtime
 - Cause: Two packages require incompatible versions of a shared dependency
-- Solution: Use a virtual environment or install the correct version explicitly
-- Databricks: Use `spark.databricks.cluster.profile` to set environment isolation
+- Solution: Pin exact versions in a `requirements.txt` installed at the cluster level, and prefer a dedicated cluster (or cluster policy) per team/project so version sets used by different workloads don't collide on a shared cluster
 
 **Problem: Package not available on worker nodes**
 - Symptom: Works on driver, fails on executors
@@ -387,19 +407,28 @@ spark.sql("SELECT add_one(value) FROM my_table")
 Pandas UDFs use Apache Arrow for zero-copy serialization between JVM and Python:
 
 ```python
-from pyspark.sql.functions import pandas_udf, PandasUDFType
-from pyspark.sql.types import IntegerType
+from pyspark.sql.functions import pandas_udf
+from pyspark.sql.types import IntegerType, StructType, StructField, StringType, LongType
 import pandas as pd
 
-# Type 1: Scalar Pandas UDF (vectorized, processes batches)
+# Scalar Pandas UDF (vectorized, processes batches)
 @pandas_udf(IntegerType())
 def add_one_batch(s: pd.Series) -> pd.Series:
     return s + 1
 
-# Type 2: Grouped Map Pandas UDF (applies function to each group)
-@pandas_udf(IntegerType(), PandasUDFType.GROUPED_MAP)
-def calculate_sum(pdf: pd.DataFrame) -> pd.DataFrame:
-    return pdf.groupby("grp").agg({"value": "sum"}).reset_index(drop=True)
+# Grouped Map — current API (Spark 3.0+): groupBy(...).applyInPandas(func, schema)
+# The older @pandas_udf(..., PandasUDFType.GROUPED_MAP) decorator still runs but is
+# deprecated as of Spark 3.0; applyInPandas is the current idiomatic approach and
+# what the exam expects you to recognize.
+output_schema = StructType([
+    StructField("grp", StringType()),
+    StructField("total", LongType()),
+])
+
+def sum_per_group(pdf: pd.DataFrame) -> pd.DataFrame:
+    return pdf.groupby("grp", as_index=False).agg(total=("value", "sum"))
+
+result_df = df.groupBy("grp").applyInPandas(sum_per_group, schema=output_schema)
 ```
 
 **How Pandas UDFs work (internals):**
@@ -413,13 +442,15 @@ def calculate_sum(pdf: pd.DataFrame) -> pd.DataFrame:
 
 | Aspect | Python UDF | Pandas UDF |
 |---|---|---|
-| Processing model | Row-by-row | Batch (vectorized) |
+| Processing | Row-by-row in Python subprocess | Batch (vectorized) via Arrow |
 | Serialization | Py4J (pickle-like) | Apache Arrow (zero-copy) |
 | Speed | Slow (~2–10x slower than Spark SQL) | Fast (near Spark SQL speed) |
 | Memory | Python worker process heap | Uses Arrow, more memory efficient |
 | Use case | Small data, complex logic | Medium-large data, vectorizable ops |
 
 **Exam trap:** Not all Pandas UDFs are faster. A Pandas UDF that processes one row at a time (using `.itertuples()` inside) has no advantage. The speed comes from vectorized batch processing.
+
+**Return type exam trap (corrected):** `returnType` on both `udf()` and `pandas_udf()` must be either an **instantiated** `DataType` object (e.g., `StringType()`, `IntegerType()`) or a DDL-formatted string (e.g., `"string"`, `"int"`). Passing the **bare class** without parentheses (`StringType` instead of `StringType()`) raises a `TypeError` immediately, for both decorator types — there is no version of this API where the un-instantiated class is the correct form.
 
 ### When to Choose Pandas UDF Over Python UDF
 
@@ -428,7 +459,7 @@ def calculate_sum(pdf: pd.DataFrame) -> pd.DataFrame:
 | Vectorizable arithmetic on columns | Pandas UDF |
 | Complex Python logic per row | Python UDF (last resort) |
 | Large dataset with simple transforms | Pandas UDF |
-| Grouped aggregation with custom logic | Grouped Map Pandas UDF |
+| Grouped aggregation with custom logic | `groupBy(...).applyInPandas(...)` |
 | String manipulation (regex, etc.) | Spark SQL functions (faster than either UDF for strings) |
 
 ### Apache Spark SQL Functions as UDF Alternatives
@@ -437,7 +468,7 @@ Before writing a UDF, always check if a Spark SQL function exists:
 
 ```python
 # Instead of a Python UDF:
-@udf
+@udf(returnType=StringType())
 def normalize_email(email):
     return email.lower().strip() if email else None
 
@@ -453,23 +484,25 @@ normalized = df.withColumn(
 
 ### Iterator-Style Pandas UDFs
 
-For memory-constrained scenarios where you cannot fit entire batches in memory:
+For memory-constrained scenarios where an entire column shouldn't be materialized in Python at once, an **Iterator of Series** UDF processes the column in sequential batches, and can maintain running state (like a cumulative total) across those batches:
 
 ```python
 from pyspark.sql.functions import pandas_udf
+from typing import Iterator
+import pandas as pd
 
 @pandas_udf("long")
-def cumulative_sum iterator_func(iterator):
+def running_total(batches: Iterator[pd.Series]) -> Iterator[pd.Series]:
     total = 0
-    for chunk in iterator:
-        chunk = chunk.cumsum()
-        total += chunk.iloc[-1]
-        yield chunk
-    
-result = df.groupby("grp").apply(cumulative_sum())
+    for batch in batches:
+        cumulative = batch.cumsum() + total
+        total = cumulative.iloc[-1]
+        yield cumulative
+
+result_df = df.select("id", running_total("value").alias("running_total"))
 ```
 
-This is rarely tested on the exam but appears in production performance scenarios.
+Each `batch` is one Arrow record batch worth of the input column (not the whole column at once), so memory stays bounded regardless of table size, while `total` carries the running state from one batch into the next. This is rarely tested directly on the exam but is worth recognizing as the pattern for "process a huge column without materializing all of it in Python."
 
 ---
 
