@@ -258,16 +258,16 @@ The `groupBy` operation is a common place for skew to manifest: if one key has v
 
 ### Question 7: **Answer B — Verify that Unity Catalog is enabled on the SQL warehouse the data scientist is using.**
 
-**Why:** When Unity Catalog is enabled, data access permissions from UC apply. However, if the data scientist is querying via a SQL warehouse (classic capacity) that does not have Unity Catalog enabled, the warehouse falls back to legacy workspace-level metastore permissions, and UC permissions are ignored.
+**Why:** When Unity Catalog is enabled, data access permissions from UC apply. However, if the compute the data scientist is querying from does not have Unity Catalog enabled (or is running in an access mode that doesn't support UC), that compute falls back to legacy workspace-level metastore permissions, and UC permissions are ignored.
 
-The question states that the engineer "has enabled Unity Catalog" but does not confirm it is enabled on the compute being used. This is a common configuration gap.
+The question states that the engineer "has enabled Unity Catalog" but does not confirm it is enabled on the compute being used. This is a common configuration gap. **Note:** the underlying gate is really about the compute's UC support/access mode (see Day 19 for the precise Dedicated-vs-Standard access mode / DBR version requirements) — "SQL warehouse" is the simplified version of this concept for Day 1's purposes.
 
 **Why the other options are wrong:**
 - A (Workspace ACL check): Once UC is enabled, workspace ACLs do not apply to table data access. This is a fundamental architectural change.
 - C (Instance profile): Instance profiles relate to cloud authentication for storage access, not UC permission enforcement.
 - D (Row filter check): Possible, but the question specifically mentions that the user was "granted read access" in UC — row filters apply after permission checks, so if permission was granted, row filter would be the next step. But the most likely cause of "no access at all" is compute not using UC.
 
-**Exam trap:** When UC is enabled, ALL access to UC-managed data must go through UC. If the compute does not have UC enabled, the data scientist gets legacy metastore permissions, not UC permissions. This is a specific configuration scenario the exam tests.
+**Exam trap:** When UC is enabled, ALL access to UC-managed data must go through UC. If the compute does not have UC enabled/supported, the data scientist gets legacy metastore permissions, not UC permissions. This is a specific configuration scenario the exam tests — see Day 19 for the exact compute-compatibility table.
 
 ---
 

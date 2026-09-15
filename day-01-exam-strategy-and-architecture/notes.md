@@ -1,5 +1,7 @@
 # Day 1 — Exam Strategy + Databricks Architecture + Spark Deep-Dive
 
+> ⚠️ **Correction notice:** This version fixes six issues found in an earlier draft: (1) the executor memory diagram's percentages summed to 140% and misrepresented Execution/Storage as siblings of User/System memory instead of nested inside Spark Memory; (2) the DBR-to-Spark version table incorrectly stated DBR 15.x ships Spark 4.0 (verified against current Databricks release notes: DBR 15.x/16.x ship Spark 3.5.x; Spark 4.0 doesn't arrive until DBR 17); (3) Unity Catalog was listed under both Control Plane and Data Plane, which is self-contradictory; (4) the Cluster Manager table incorrectly associated Azure HDInsight (an unrelated Azure service) with Databricks; (5) the driver-failure section used OSS Spark/YARN "cluster mode vs. client mode" language that Databricks doesn't expose, instead of the actual Databricks-native recovery mechanism (Jobs-level retries); (6) the "job clusters start faster than all-purpose clusters" claim had it backwards. All six are corrected below.
+
 ## Objectives (Exam Guide)
 
 This day covers foundational knowledge that underpins all 10 exam sections. No single exam objective maps to this day, but it addresses the prerequisite knowledge every Professional-level question assumes. Specifically:
@@ -20,7 +22,7 @@ This day covers foundational knowledge that underpins all 10 exam sections. No s
 | Time | 120 minutes |
 | Delivery | Online proctored or test center |
 | Test aides | None — no API docs, no external references |
-| Passing threshold | Databricks does not publish a fixed passing score; estimates range 65–72% based on community reports |
+| Passing threshold | Databricks does not publish a fixed passing score; treat any specific number (including community estimates) as unverified — don't anchor your prep to a target percentage |
 
 ### Time Management Strategy
 
@@ -93,16 +95,17 @@ The Databricks Data Intelligence Platform operates in two conceptual layers:
 - Web Application (Workspace UI)
 - Notebook / DBSQL / Git Folders (formerly Repos)
 - Job Scheduler
-- Unity Catalog (Governance Layer)
+- Unity Catalog — the metastore, governance, and metadata service itself (who can access what)
 - REST API / CLI
 
 **DATA PLANE (Customer cloud account)**
 - AWS/Azure/GCP Storage (S3/ADLS/GCS)
 - Compute (All-purpose clusters, Job clusters)
-- Delta Lake (data in cloud storage)
-- Unity Catalog (metastore + security policies)
+- Delta Lake (data files physically sitting in cloud storage)
 
 **Critical distinction for the exam:** The control plane manages orchestration and metadata, but data never flows through it. Data reads and writes go directly between compute (executors) and cloud storage. This matters for latency, cost, and security architecture questions.
+
+**Where does Unity Catalog actually live?** UC's metastore and policy engine are **Databricks-managed control-plane infrastructure** — not something the customer hosts. UC doesn't belong in the data plane; what it *governs* (the actual table files, compute) lives in the data plane. Don't list UC as a data-plane component — it's a control-plane service that reaches into data-plane storage to enforce access policy.
 
 ### Unity Catalog Architecture
 
@@ -119,7 +122,7 @@ Unity Catalog (metastore)
 └── External locations (linked)
 ```
 
-**Key architectural distinction:** Unity Catalog is a workspace-level (or account-level) service, not a cluster-level one. Permissions set in Unity Catalog apply across all clusters that have Unity Catalog enabled. This is a common exam trap — legacy cluster-level ACLs do not apply when UC is enabled.
+**Key architectural distinction:** Unity Catalog is an account-level service (one metastore per region, attachable to multiple workspaces), not a cluster-level one. Permissions set in Unity Catalog apply across all clusters/warehouses that have Unity Catalog enabled. This is a common exam trap — legacy cluster-level ACLs do not apply when UC is enabled (see Day 18 for the full ACL model).
 
 ### Compute Types
 
@@ -130,7 +133,7 @@ Unity Catalog (metastore)
 | Serverless (AWS/Azure) | Serverless compute — no cluster management | Higher DBU rate, no instance wait time |
 | SQL Warehouse (Serverless or Pro) | DBSQL only | Separate billing from classic compute |
 
-**Exam trap:** Job clusters start faster than all-purpose clusters but still have startup time. For very short jobs (<30 seconds), this startup overhead can dominate. This is why the exam has a question about choosing "job cluster" vs "triggered streaming" — you need to know the trade-off.
+**Exam trap:** Job clusters **cold-start on every run** (provisioning typically takes several minutes) since they spin up fresh and terminate afterward — they do not start "faster" than all-purpose clusters as a general rule. An all-purpose cluster only responds quickly if one is *already running* and you're attaching to it; if it's stopped, it cold-starts too. The exam-relevant trade-off is startup overhead vs. run duration: for very short, frequent jobs (<30 seconds of actual work), a job cluster's provisioning time can dominate total runtime — this is why the exam tests "job cluster vs. triggered streaming vs. an always-on cluster" trade-offs for high-frequency short workloads.
 
 ### Workspace Organization
 
@@ -178,10 +181,12 @@ The Driver is a JVM process that:
 **In Databricks:** The driver runs on one node of the cluster. For single-node clusters (e.g., Community Edition), the driver and executor share a JVM or run side by side.
 
 **Common exam question about the driver:** What happens if the driver fails?
-- Application crashes
+- The application crashes
 - All in-flight tasks are lost
-- Spark UI is unavailable
-- **Recovery depends on deployment mode:** Cluster mode can recover (supervises the driver), client mode cannot
+- Spark UI becomes unavailable
+- **Recovery on Databricks specifically:** there is no "client mode vs. cluster mode" distinction exposed to you — that's OSS Spark/YARN deploy-mode terminology, and Databricks abstracts it away entirely. The Databricks-native recovery mechanism is **Jobs-level retry configuration** (`max_retries` on a job/task): if the driver dies mid-run, a properly configured job retries the run with a fresh driver process. An all-purpose interactive notebook with no job wrapping it simply fails, with no automatic retry.
+
+**Exam trap:** if a question is framed around Databricks (not raw OSS Spark), don't reach for "cluster mode can recover the driver, client mode cannot." The Databricks-correct answer to "how do you recover from a lost driver" is configuring **Jobs retries**, not a Spark deploy-mode property.
 
 **Driver OOM scenarios:**
 - Collecting large DataFrames (`df.collect()`) — driver pulls all data to driver JVM
@@ -220,16 +225,9 @@ Executors are JVM processes (one per worker node by default, but can be multiple
 
 ### Cluster Manager
 
-Spark supports four cluster managers:
+In open-source Spark, a cluster manager (Standalone, YARN, Kubernetes, Mesos) allocates resources for the driver and executors. **On Databricks, this is fully abstracted away** — you choose a cloud (AWS/Azure/GCP) and node type, and Databricks provisions and manages the underlying driver/executor containers itself. You never configure or select a specific OSS cluster manager on Databricks.
 
-| Cluster Manager | Databricks Support |
-|---|---|
-| Standalone | Community Edition uses this |
-| YARN | Azure HDInsight, legacy deployments |
-| Kubernetes | GCP Databricks, advanced configs |
-| Mesos | Deprecated |
-
-**In Databricks:** The cluster manager is abstracted away. You choose "AWS," "Azure," or "GCP" and Databricks manages the underlying resource provisioning. The exam tests your understanding of Spark behavior, not which cluster manager is configured.
+**Exam trap:** don't assume Databricks maps one-to-one onto a specific OSS cluster manager per cloud (e.g., don't assume "GCP Databricks uses Kubernetes" as an exam-testable fact, and don't confuse unrelated Azure products like HDInsight with Databricks — they are separate services). The exam tests your understanding of **Spark execution behavior** (Driver/Executor/Stage/Task, memory, shuffle), not which literal cluster-manager daemon is running underneath Databricks' compute layer.
 
 ### Partitioning
 
@@ -284,25 +282,21 @@ A Task is the smallest unit of work in Spark:
 
 ### Memory Model (Executor-Level)
 
-Executor memory is divided into regions:
+Executor memory is divided into regions, nested as follows (percentages are of the *remaining* heap after a small fixed reservation — they sum to 100%, not independent shares):
 
 ```
-Executor Memory
-├── Execution Memory (~40%)
-│   ├── Shuffle sort
-│   ├── Hash join
-│   └── Internal rows
-├── Storage Memory (~60%)
-│   ├── Cache (RDD/DataFrame)
-│   ├── Broadcast variables
-│   └── Internal metadata
-├── User Memory (~30% of total)
-│   └── User variables, UDFs, data structures
-└── System Memory (~10% of total)
-    └── JVM overhead
+Executor JVM Heap (spark.executor.memory)
+├── Reserved Memory (~300MB, fixed)
+├── User Memory (~40% of remaining heap)
+│   └── User variables, UDFs (non-Pandas), data structures
+└── Spark Memory (~60% of remaining heap — spark.memory.fraction)
+    ├── Storage Memory (spark.memory.storageFraction, default 0.5 of Spark Memory)
+    │   └── Cache (RDD/DataFrame), broadcast variables, internal metadata
+    └── Execution Memory (remainder of Spark Memory)
+        └── Shuffle sort, hash join, internal rows
 ```
 
-**Key exam insight:** Execution memory and Storage memory share a pool (unified memory). However, when Execution is full, it cannot evict from Storage.
+**Key exam insight:** Execution memory and Storage memory share a single pool (unified memory). Execution *can* evict cached data from Storage (LRU) when it needs more room; **Storage can never evict Execution**. If Execution is still short on space after evicting everything it can from Storage, it spills to disk rather than failing outright. (Day 7 covers the full unified-memory model and the driver-vs-executor OOM decision tree in depth.)
 
 **Python UDF memory:** Python UDFs run in a separate Python process, not in the JVM. Their memory does not count against `spark.executor.memory`. Instead, constrained by `spark.python.worker.memory` (default 512MB per worker) and `spark.python.worker.reuse=true`.
 
@@ -322,12 +316,18 @@ Executor Memory
 
 ### Databricks Runtime (DBR) Versions
 
-DBR versions are dated. Current stable is DBR 15.x:
-- DBR 14.x ships Spark 3.5
-- DBR 15.x ships Spark 4.0
-- Features like Liquid Clustering require DBR 14.3+
+DBR versions are dated, and each ships a specific Apache Spark version. Verified against current Databricks release notes:
 
-**For the exam:** Use the exam guide's feature names (Liquid Clustering, AUTO CDC, etc.) rather than DBR version numbers.
+| DBR Version | Apache Spark Version |
+|---|---|
+| DBR 14.x | Spark 3.5.0 |
+| DBR 15.x (incl. 15.4 LTS) | Spark 3.5.0 |
+| DBR 16.x (incl. 16.4 LTS) | Spark 3.5.2 |
+| DBR 17.x | Spark 4.0.0 |
+
+**Exam trap:** Spark 4.0 does **not** ship until DBR 17 — a scenario implying DBR 15.x already runs Spark 4.0 is testing (or reflecting) a stale/incorrect version mapping. Don't memorize an old version table without re-verifying it.
+
+**For the exam:** Use the exam guide's feature names (Liquid Clustering, AUTO CDC, etc.) rather than DBR version numbers in most cases — DBR minimum-version requirements for a given feature (e.g., Day 19's Dedicated-access-mode/DBR-15.4 gate for row filters) shift release to release, so verify the specific number against current docs rather than treating any single figure as permanently fixed.
 
 ### Databricks-Specific Spark Properties
 
@@ -359,6 +359,7 @@ All four of these are actively tested. The old names are also technically valid 
 
 - **Day 5 (Spark Execution):** Goes deeper into DAG, lazy evaluation, action vs. transformation, wide vs. narrow.
 - **Day 6 (Shuffle):** Detailed explanation of shuffle read/write, partitioner strategies, and spill.
-- **Day 7 (Spark Memory):** Detailed GC behavior, memory pressure scenarios, OOM root causes.
+- **Day 7 (Spark Memory):** Detailed GC behavior, memory pressure scenarios, OOM root causes, and the full unified-memory eviction model referenced above.
 - **Day 8 (Spark UI + Query Profile):** Practical diagnosis using the interfaces built on this architecture.
 - **Day 15 (Lakeflow Pipelines):** How Spark Structured Streaming integrates with Databricks pipeline semantics.
+- **Day 18 (Unity Catalog ACLs):** Full account-level UC permission model referenced above.

@@ -51,6 +51,8 @@ Application
 | **One executor (others idle)** | Data skew — one partition much larger than others |
 | **All executors at limit** | Partition count too low for data volume |
 
+**Recovery on Databricks:** driver failure → recover via **Jobs-level `max_retries`**, not an OSS Spark "cluster mode/client mode" concept (Databricks abstracts that away — don't reach for it on a Databricks-flavored question).
+
 ---
 
 ## Repartition vs Coalesce
@@ -66,14 +68,19 @@ Application
 
 ## Spark Memory Regions (Executor)
 
-| Region | Purpose | Config |
-|---|---|---|
-| Execution Memory | Shuffle sort, hash join, internal rows | ~40% of heap |
-| Storage Memory | Cache, broadcasts | ~60% of heap (shared with execution) |
-| User Memory | UDF variables, Python data | ~30% of total |
-| System Memory | JVM overhead | ~10% of total |
+Nested, not flat — percentages are shares of the *remaining* heap after a small fixed reservation, and they sum to 100%:
 
-Python UDF memory = off-heap (`spark.python.worker.memory`, default 512MB/worker), NOT in executor heap.
+| Region | Purpose | Sizing |
+|---|---|---|
+| Reserved Memory | Fixed JVM reservation | ~300MB, fixed |
+| User Memory | UDF variables (non-Pandas), Python-adjacent data | ~40% of remaining heap |
+| Spark Memory | Shared pool for Execution + Storage | ~60% of remaining heap (`spark.memory.fraction`) |
+| ↳ Storage Memory | Cache, broadcasts | `spark.memory.storageFraction` (default 0.5) of Spark Memory |
+| ↳ Execution Memory | Shuffle sort, hash join, internal rows | Remainder of Spark Memory |
+
+**Key rule:** Execution can evict Storage's cached data (LRU) when it needs more room; **Storage can never evict Execution**. If Execution is still short after evicting everything from Storage, it spills to disk instead of erroring.
+
+Python UDF memory = off-heap (`spark.python.worker.memory`, default 512MB/worker), **NOT** in this executor heap diagram at all.
 
 ---
 
@@ -81,12 +88,13 @@ Python UDF memory = off-heap (`spark.python.worker.memory`, default 512MB/worker
 
 | Concept | Key Fact |
 |---|---|
-| Control Plane | Manages metadata, jobs, UI — NOT data path |
-| Data Plane | Executors read/write directly to cloud storage |
+| Control Plane | Manages metadata, jobs, UI, **and Unity Catalog's metastore/governance service** — NOT the data path |
+| Data Plane | Executors read/write directly to cloud storage; this is where UC-governed data files and compute actually live |
 | DBFS | Mount layer over S3/ADLS/GCS — NOT separate storage |
-| Unity Catalog | Account-level, not cluster-level; overrides cluster ACLs when enabled |
-| Job Cluster | Starts on trigger, terminates after — billed only during run |
-| All-Purpose Cluster | Billed while running (DBU + cloud instance) |
+| Unity Catalog | Account-level, not cluster-level; overrides cluster ACLs when enabled — lives in the control plane, don't list it as a data-plane component |
+| Cluster Manager | Fully abstracted on Databricks — don't assume a 1:1 mapping to OSS Standalone/YARN/Kubernetes per cloud |
+| Job Cluster | Cold-starts on every trigger (several minutes) — NOT inherently "faster" than all-purpose |
+| All-Purpose Cluster | Fast only if already running and attached to; cold-starts otherwise |
 
 ---
 
@@ -108,6 +116,7 @@ Python UDF memory = off-heap (`spark.python.worker.memory`, default 512MB/worker
 3. "One slow task" → data skew, not "increase partitions" (the root cause, not the solution)
 4. "What happens when code runs?" → read literally, don't infer intent
 5. UC enabled + legacy ACLs → UC wins; cluster ACLs are ignored
+6. DBR version ≠ Spark version you might assume — verify the current mapping (e.g., Spark 4.0 arrives at DBR 17, not 15) rather than trusting a memorized table
 
 ---
 
