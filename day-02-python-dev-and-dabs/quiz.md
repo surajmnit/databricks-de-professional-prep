@@ -71,7 +71,7 @@ What is the most likely cause of the slowdown?
 
 A. The Pandas UDF is running in a Python subprocess that is not vectorized
 B. The return type `double` is not compatible with Pandas UDFs
-C. Grouped aggregation inside a Pandas UDF requires a GROUPED_MAP type, not a scalar UDF
+C. Grouped aggregation inside a Pandas UDF requires `groupBy(...).applyInPandas(...)`, not a scalar UDF
 D. 500 million rows exceeds the maximum batch size for Pandas UDFs
 
 ---
@@ -129,28 +129,26 @@ D. `databricks bundle deploy prod --ignore-existing`
 
 ## Question 7
 
-**Objective:** Develop UDFs using Pandas UDF.
+**Objective:** Develop UDFs using Pandas UDF — return type must be an instantiated `DataType`.
 
 A data engineer writes the following Pandas UDF:
 
 ```python
 from pyspark.sql.functions import pandas_udf
-from pyspark.sql.types import StringType()
+from pyspark.sql.types import StringType
 import pandas as pd
 
-@pandas_udf(returnType=StringType())
+@pandas_udf(returnType=StringType)
 def mask_email(email: pd.Series) -> pd.Series:
     return email.str.replace(r'(?<=.{2}).(?=[^@]+@)', '*', regex=True)
 ```
 
-The code runs correctly on small datasets but fails with a serialization error on large datasets.
+This raises a `TypeError` the moment the UDF is defined, before any data is processed. What is the most likely root cause?
 
-Which configuration is most likely the root cause?
-
-A. The Arrow batch size is too small for large datasets; increase `spark.sql.execution.arrow.maxRecordBatchSize`
-B. The UDF return type `StringType()` is missing parentheses
-C. Large datasets require Python UDF instead of Pandas UDF due to memory constraints
-D. The regular expression pattern is too complex for Arrow serialization
+A. `returnType` was passed the `StringType` class itself instead of an instantiated `StringType()` object
+B. The regex pattern uses a lookbehind, which Arrow-based UDFs cannot serialize
+C. Pandas UDFs cannot return `StringType` at all — only numeric types are supported
+D. The function is missing an explicit `functionType=PandasUDFType.SCALAR` argument, which current Spark versions require
 
 ---
 
@@ -260,33 +258,40 @@ Placing files in `/Workspace/` makes them accessible for `%run` (notebook-to-not
 
 ---
 
-### Question 3: **Answer C — Grouped aggregation inside a Pandas UDF requires a GROUPED_MAP type, not a scalar UDF.**
+### Question 3: **Answer C — Grouped aggregation inside a Pandas UDF requires `groupBy(...).applyInPandas(...)`, not a scalar UDF.**
 
-**Why:** The UDF uses `s.cumsum()` on the entire Series — this calculates a global running total, not a per-group running total. For per-group operations, a Pandas UDF requires the `PandasUDFType.GROUPED_MAP` annotation, which passes one DataFrame per group to the function:
+**Why:** The UDF uses `s.cumsum()` on the entire Series — this calculates a global running total, not a per-group running total. For per-group operations, Spark's current API is `groupBy(...).applyInPandas(func, schema)`, which passes one Pandas DataFrame per group to the function:
 
 ```python
-from pyspark.sql.functions import pandas_udf, PandasUDFType
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
 
-@pandas_udf("double", PandasUDFType.GROUPED_MAP)
-def running_total(pdf: pd.DataFrame) -> pd.DataFrame:
+schema = StructType([
+    StructField("grp", StringType()),
+    StructField("value", DoubleType()),
+    StructField("running_total", DoubleType()),
+])
+
+def running_total_per_group(pdf: pd.DataFrame) -> pd.DataFrame:
     pdf["running_total"] = pdf["value"].cumsum()
     return pdf
+
+result = df.groupBy("grp").applyInPandas(running_total_per_group, schema=schema)
 ```
 
-A scalar Pandas UDF (without GROUPED_MAP) receives data batch by batch, where each batch may not represent a complete group — so global `cumsum()` gives wrong results.
+A scalar Pandas UDF (as written) receives data batch by batch, where each batch may not represent a complete group — so a global `cumsum()` gives wrong results.
 
 **Why the other options are wrong:**
 - A: Pandas UDFs ARE vectorized and do run in a Python subprocess. The described behavior (one row at a time due to custom aggregation) is not a Pandas UDF limitation but a code design issue.
-- B: `double` is a valid Pandas UDF return type; there is no compatibility issue.
+- B: `double` (as a DDL string) or `DoubleType()` (as an instance) are both valid Pandas UDF return types; there is no compatibility issue.
 - D: There is no fixed maximum batch size that causes Pandas UDFs to fail. Large datasets are processed in batches within the Arrow pipeline.
 
-**Exam trap:** The question describes a "custom aggregation requirement" that processes one row at a time — this is a code-level design problem, not a Pandas UDF framework problem. The exam tests whether you know that grouped operations in Pandas UDFs need GROUPED_MAP.
+**Exam trap:** The question describes a "custom aggregation requirement" that processes one row at a time — this is a code-level design problem, not a Pandas UDF framework problem. The exam tests whether you know that grouped operations need `applyInPandas`, not a scalar `pandas_udf`.
 
 ---
 
 ### Question 4: **Answer B — Use a single databricks.yml with a `targets` section containing dev, staging, and prod configurations.**
 
-**Why:** DABs are designed for environment promotion via the `targets` block in a single `databricks.yml`. The same bundle definition (resources, pipelines, notebooks) is deployed to different workspaces/environments by changing the target:
+**Why:** DABs are designed for environment promotion via the `targets` block in a single `databricks.yml`. The same bundle definition (resources, pipelines, notebooks) is deployed to different workspaces/environments by changing the target, with sizing differences handled via bundle **variables** overridden per target:
 
 ```yaml
 # One databricks.yml, multiple targets
@@ -306,7 +311,7 @@ targets:
 
 **Why the other options are wrong:**
 - A: Multiple YAML files are not the DAB pattern. Databricks.yml is the single source of truth.
-- C: While `--var` flags exist, the primary pattern for environment config is the `targets` block, not environment variable substitution.
+- C: While `--var` flags exist for one-off overrides, the primary pattern for environment config is the `targets` block with per-target `variables`, not passing everything via CLI flags.
 - D: Separate bundle directories per environment are not the pattern — one bundle, multiple targets.
 
 **Exam trap:** The exam may present a scenario with "three databricks.yml files" as a distractor. The correct pattern is always a single bundle with multiple targets.
@@ -341,30 +346,22 @@ The error `cannot import name 'geopandas' from 'pandas'` suggests a version conf
 
 ---
 
-### Question 7: **Answer B — The UDF return type `StringType()` is missing parentheses.**
+### Question 7: **Answer A — `returnType` was passed the `StringType` class itself instead of an instantiated `StringType()` object.**
 
-**Why:** The code uses `StringType()` with parentheses in the annotation but the import uses `from pyspark.sql.types import StringType()` which is invalid Python — `StringType` is a class, and calling it without arguments requires `StringType()` but importing it with `()` is a syntax error. More precisely, the problem is that `StringType()` in the annotation is a **runtime call** that creates a `StringType()` instance each time the UDF is invoked, which can cause serialization issues. The correct pattern is `StringType` (the class itself) passed as the return type:
+**Why:** `pandas_udf`'s `returnType` parameter (like `udf`'s) must be either an **instantiated** `pyspark.sql.types.DataType` object (e.g., `StringType()`) or a DDL-formatted type string (e.g., `"string"`). Passing the bare class — `StringType` with no parentheses — is not a valid `DataType` instance, and Spark raises a `TypeError` immediately when the decorator is evaluated, before the UDF ever touches data. The fix is simply:
 
 ```python
-# Correct:
-@pandas_udf(returnType=StringType)   # Pass the class, not an instance
-def mask_email(email: pd.Series) -> pd.Series:
-    ...
-
-# OR:
-@pandas_udf("string")                # String type name
-def mask_email(email: pd.Series) -> pd.Series:
-    ...
+@pandas_udf(returnType=StringType())   # instantiated — correct
+# or
+@pandas_udf("string")                  # DDL string — also correct
 ```
 
-Using `StringType()` (instantiated) as the return type annotation causes a serialization mismatch between the JVM and Python.
-
 **Why the other options are wrong:**
-- A: Arrow batch size is configurable but not the primary cause of a serialization error in this pattern.
-- C: Pandas UDFs handle large datasets efficiently; the issue here is a code error.
-- D: Regex complexity is not a serialization concern.
+- B: Arrow serialization doesn't care about regex complexity — there's no such limitation, and the error described happens at *definition* time, before the regex is ever evaluated against data.
+- C: False — Pandas UDFs support the full range of Spark SQL types, not just numeric ones.
+- D: False — `functionType` defaults to `PandasUDFType.SCALAR` and does not need to be passed explicitly in current Spark versions; the type hints on the function signature are what current Spark uses to infer UDF behavior.
 
-**Exam trap:** This is a subtle Python/Spark typing issue. The return type annotation in a Pandas UDF should use the **type class** (`StringType`) not an **instance** (`StringType()`). This is tested in production code patterns.
+**Exam trap:** It's tempting to memorize "always use the class, not the instance" or vice versa as a blanket rule — the actual rule is simpler and applies identically to both `udf()` and `pandas_udf()`: **always instantiate** (`StringType()`), whether you pass a `DataType` object or skip it entirely in favor of a DDL string (`"string"`).
 
 ---
 
@@ -411,3 +408,20 @@ This runs entirely within the JVM (no Python subprocess) and is the fastest opti
 - C: Correct but not the most complete answer — Spark SQL expression is also valid.
 
 **Exam trap:** The exam often tests "which approach is most appropriate" — the answer is rarely a single technique. The best answer is the one that applies the right tool for the specific situation: SQL functions when expressible, Pandas UDFs when vectorizable but not expressible in SQL, and Python UDFs as a last resort.
+
+---
+
+## Difficulty Ratings
+
+| Q# | Difficulty | Topic |
+|---|---|---|
+| 1 | Medium | Files in `/Workspace/` are not auto-importable |
+| 2 | Critical | `%pip install` is driver-only; UDFs need cluster-level install |
+| 3 | Medium | Grouped ops need `applyInPandas`, not a scalar UDF |
+| 4 | Medium | Single `databricks.yml`, multiple `targets` |
+| 5 | Medium | DBR-bundled package shadowing |
+| 6 | Medium | `--force`, not `--overwrite` |
+| 7 | Hard | `returnType` must be instantiated (`StringType()`), never the bare class |
+| 8 | Medium | `%run` merges scope; proper packages prevent it |
+| 9 | Medium | Bundle deploy doesn't validate notebook paths exist |
+| 10 | Medium | SQL function > Pandas UDF > Python UDF, in that order of preference |
