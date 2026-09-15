@@ -296,6 +296,8 @@ Executor JVM Heap (spark.executor.memory)
         └── Shuffle sort, hash join, internal rows
 ```
 
+![alt text](image.png)
+
 **Key exam insight:** Execution memory and Storage memory share a single pool (unified memory). Execution *can* evict cached data from Storage (LRU) when it needs more room; **Storage can never evict Execution**. If Execution is still short on space after evicting everything it can from Storage, it spills to disk rather than failing outright. (Day 7 covers the full unified-memory model and the driver-vs-executor OOM decision tree in depth.)
 
 **Python UDF memory:** Python UDFs run in a separate Python process, not in the JVM. Their memory does not count against `spark.executor.memory`. Instead, constrained by `spark.python.worker.memory` (default 512MB per worker) and `spark.python.worker.reuse=true`.
