@@ -146,6 +146,39 @@
 
 ---
 
+## Day 1 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| SparkContext | Entry point to Spark; runs on driver; builds DAG; schedules tasks | 1 |
+| Stage | Set of tasks with no shuffle boundary between them | 1 |
+| Task | Smallest unit of work; one per partition | 1 |
+| Shuffle boundary | Network data movement between stages; creates new Stage | 1 |
+| Narrow transformation | No shuffle (filter, withColumn, select) | 1 |
+| Wide transformation | Requires shuffle (groupBy, join, repartition, sort, distinct) | 1 |
+| Spark UI | Driver-hosted web UI at driver:4040; shows Jobs/Stages/Tasks | 1 |
+| spark.sql.shuffle.partitions | Default partition count for shuffle operations (200) | 1 |
+| spark.executor.heartbeatInterval | Frequency of executor heartbeats to driver (default 10s) | 1 |
+| spark.stage.maxAttempts | Max retries per stage (default 4) | 1 |
+| spark.driver.maxResultSize | Max size of collect() result at driver (default 1GB) | 1 |
+| Data skew | Uneven partition distribution; one partition dominates | 1 |
+| Dynamic allocation | Auto add/remove executors based on workload | 1 |
+| Cluster Manager | Resource allocator (Standalone, YARN, K8s, Mesos) for driver/executors | 1 |
+| DBR | Databricks Runtime version; ships specific Spark version | 1 |
+| Control Plane | Databricks-managed services: UI, job scheduler, API, UC governance | 1 |
+| Data Plane | Customer cloud account: storage, compute (executors), Delta Lake files | 1 |
+| DBFS | Mount layer over cloud storage (S3/ADLS/GCS); not a separate storage system | 1 |
+| All-Purpose Cluster | Interactive cluster; billed while running (DBU + cloud instance) | 1 |
+| Job Cluster | Ephemeral cluster; starts on job trigger, terminates after; DBU only | 1 |
+| Serverless Compute | No cluster management; higher DBU rate, no instance wait time | 1 |
+| Managed table | UC controls storage location and full lifecycle; DROP deletes files | 1 |
+| External table | User specifies path; DROP only removes metastore reference | 1 |
+| Whole-stage codegen | Collapses operators into one generated function; prefix | 1 |
+| Photon | Databricks vectorized engine; default on newer DBR | 1 |
+| Databricks SQL (DBSQL) | Serverless SQL warehouse; billed by DBU per query | 1 |
+
+---
+
 ## Day 2 Updates
 
 | Term | Definition | Day |
@@ -253,6 +286,140 @@
 
 ---
 
+## Day 8 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Query Profile | DBSQL UI for detailed SQL query execution metrics; shows operators and timing | 8 |
+| Spark UI | Driver-hosted web UI at driver:4040; shows Jobs/Stages/Tasks/Storage/Environment | 8 |
+| AQE | Adaptive Query Execution; re-optimizes physical plan mid-query using real statistics | 8 |
+| Coalesce shuffle partitions | AQE feature to merge small partitions post-shuffle for better parallelism | 8 |
+| Skew join optimization | AQE auto-splits skewed partitions into smaller sub-tasks processed in parallel | 8 |
+| Dynamic join switching | AQE converts SortMergeJoin to BroadcastHashJoin mid-query based on actual stats | 8 |
+| Data skipping | Reading fewer files by comparing query filters against file min/max stats | 8 |
+| Bad data skipping | High scanned-vs-pruned ratio; caused by poor clustering or missing statistics | 8 |
+| CAN MONITOR | Warehouse-level permission to view query profiles; distinct from UC data grants | 8 |
+| Spill | Data written to disk when executor memory insufficient | 8 |
+| GC Time % | Garbage collection time; high % indicates memory pressure | 8 |
+| Max vs Median task duration | Ratio >5x with skewed shuffle read = data skew | 8 |
+| Verbose mode | Query Profile setting to show every operator and additional metrics | 8 |
+| Automated insights | Query Profile auto-surfaces bottlenecks (skew, spill, inefficient join) | 8 |
+
+
+---
+
+## Day 9 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Transaction Log (_delta_log) | Append-only log of every transaction; defines table state | 9 |
+| ACID transactions | Atomicity, Consistency, Isolation, Durability — guaranteed by transaction log | 9 |
+| Optimistic concurrency | Delta uses version-number retry, not distributed locking | 9 |
+| Checkpoint | Parquet consolidation every 10 commits; speeds up table state reconstruction | 9 |
+| add action | Transaction log action registering a new data file | 9 |
+| remove action | Transaction log action tombstoning a file (logical delete) | 9 |
+| metadata action | Transaction log action recording schema, partition columns, properties | 9 |
+| protocol action | Transaction log action specifying min reader/writer version | 9 |
+| commitInfo | Transaction log action with operation metadata | 9 |
+| txn action | Transaction log idempotency marker for streaming writes | 9 |
+| Schema enforcement | Delta rejects writes with mismatched schema by default | 9 |
+| Schema evolution | mergeSchema for additive changes; overwriteSchema for full replacement | 9 |
+| Time travel | Query historical table state using VERSION AS OF or TIMESTAMP AS OF | 9 |
+| RESTORE TABLE | Recover a table to a previous version | 9 |
+| VACUUM | Physically removes unreferenced files past retention window | 9 |
+| Predictive Optimization | UC managed table automation: OPTIMIZE, VACUUM, ANALYZE via serverless compute | 9 |
+| Predictiv Optimization exclusions | Does not run on external tables or Delta Sharing recipient tables | 9 |
+| Small-file problem | Too many small files from over-partitioning or high-cardinality partition column | 9 |
+| Low-cardinality partition | Partition column with few distinct values; coarse-grained filtering | 9 |
+| Z-Ordering | Sort by column(s) within files to co-locate related data; manual, periodic | 9 |
+| Data skipping via Z-Order | Z-Ordered files enable better min/max stats for filtered columns | 9 |
+
+
+---
+
+## Day 10 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| MERGE INTO | Upsert: INSERT + UPDATE + DELETE in one statement | 10 |
+| WHEN MATCHED | Fires when target row matches source row; UPDATE or DELETE | 10 |
+| WHEN NOT MATCHED | Fires when source row has no target match; INSERT | 10 |
+| WHEN NOT MATCHED BY SOURCE | Fires when target row has no source match; handle disappeared rows | 10 |
+| Multiple match error | MERGE fails if ON condition matches multiple source rows to one target row | 10 |
+| SCD Type 1 | Overwrite in place; no history preserved | 10 |
+| SCD Type 2 | Preserve full history with effective_date/end_date validity windows | 10 |
+| CDC | Change Data Capture; capturing row-level changes from source | 10 |
+| foreachBatch | Structured Streaming pattern for custom microbatch sinks | 10 |
+| Change Data Feed (CDF) | Delta feature recording row-level change operations | 10 |
+| enableChangeDataFeed | Table property to enable CDF tracking | 10 |
+| readChangeFeed | Read CDF changes via spark.readStream or spark.read | 10 |
+| _change_type | CDF column: insert, update_preimage, update_postimage, delete | 10 |
+| _commit_version | CDF column: Delta table version the change belongs to | 10 |
+| _commit_timestamp | CDF column: when the commit happened | 10 |
+| UPDATE = two CDF rows | Each UPDATE produces update_preimage + update_postimage | 10 |
+| CDF no backfill | CDF only captures changes after it is enabled | 10 |
+| CDF + streaming | CDF stream returns snapshot on first start, then incremental changes | 10 |
+
+
+---
+
+## Day 11 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Deletion vectors | Merge-on-read soft-delete tracking; avoids full file rewrite on DELETE/UPDATE/MERGE | 11 |
+| Copy-on-write | Traditional model: rewriting entire file for any small change | 11 |
+| Merge-on-read | New model with deletion vectors: mark rows, apply at read time | 11 |
+| Protocol upgrade | Enabling deletion vectors upgrades table protocol; older clients may lose access | 11 |
+| REORG TABLE APPLY (PURGE) | Physically rewrites files removing rows marked by deletion vectors | 11 |
+| Row-level concurrency | DBR 14.2+ improvement: two writers touching different rows in same file can both succeed | 11 |
+| Liquid Clustering | Modern data layout replacing partitioning and Z-Order; incremental, redefinable | 11 |
+| CLUSTER BY | SQL syntax for Liquid Clustering keys | 11 |
+| CLUSTER BY AUTO | Databricks-managed clustering keys; DBR 15.4 LTS+, UC managed tables | 11 |
+| OPTIMIZE | Command to compact files and trigger incremental Liquid Clustering | 11 |
+| Clustering key redefinition | Liquid Clustering allows changing keys without full table rewrite | 11 |
+| delta.dataSkippingNumIndexedCols | Default 32 columns have stats collected; adjust if key column is outside this | 11 |
+| delta.dataSkippingStatsColumns | Explicitly name which columns collect statistics | 11 |
+| File pruning | Skip individual files via transaction-log min/max stats; works without partitioning | 11 |
+| Partition pruning | Skip entire directories based on partition column filter | 11 |
+| ANALYZE TABLE | Collect table statistics for query planning | 11 |
+| Photon predictive I/O | Uses deletion vectors to accelerate UPDATE operations | 11 |
+
+
+---
+
+## Day 18 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Unity Catalog | Account-level governance: metastore → catalog → schema → table/view | 18 |
+| Metastore | Root of UC hierarchy; scoped to one cloud region per account | 18 |
+| Metastore admin | Highest privilege; can grant any permission, manage all catalogs | 18 |
+| Catalog | Top-level namespace in UC | 18 |
+| Schema | Namespace within catalog containing tables/views | 18 |
+| Managed table | UC owns storage path, lifecycle, and files | 18 |
+| External table | User-managed path; UC tracks metadata only | 18 |
+| GRANT | Give permission to a principal | 18 |
+| REVOKE | Remove permission from a principal | 18 |
+| USE CATALOG | Required traversal permission to access a catalog | 18 |
+| USE SCHEMA | Required traversal permission to access a schema | 18 |
+| SELECT | Permission to read data from a table/view | 18 |
+| MODIFY | Permission to write/delete on tables | 18 |
+| ALL PRIVILEGES | Shorthand for all applicable privileges on an object | 18 |
+| OWNERSHIP | Exclusive; one principal owns each object; can grant to others | 18 |
+| CREATE | Permission to create objects within a schema/catalog | 18 |
+| BUILTIN | Default roles (data engineer, analyst, etc.) pre-seeded in UC | 18 |
+| Service Principal | Machine identity for automated tooling; can hold grants | 18 |
+| IF EXISTS / IF NOT EXISTS | Safe DDL: suppress errors for missing/existing objects | 18 |
+| Permission inheritance | Child objects inherit parent permissions by default | 18 |
+| Privilege amplification | Principals with higher permission automatically get lower on child objects | 18 |
+| Securable object | Any UC object that can have permissions: catalog, schema, table, view, function | 18 |
+| updatePermissions | Audit log event when ACLs are changed | 18 |
+| access.audit | System table for all audit events | 18 |
+
+
+---
+
 ## Day 7 Updates
 
 | Term | Definition | Day |
@@ -306,3 +473,100 @@
 | Lakehouse Federation | Query external databases from Databricks via Unity Catalog | 20 |
 | External Connection | Unity Catalog object with credentials to external DB | 20 |
 | Federated Query | Query executed on source DB; only results returned | 20 |
+
+
+---
+
+## Day 19 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| Row filter | UC feature: scalar function filtering rows based on caller identity/group | 19 |
+| Column mask | UC feature: scalar function masking column values (e.g., SSN → ***-**-****) | 19 |
+| is_account_group_member | UC function to check caller's group membership | 19 |
+| DROP ROW FILTER | Must drop filter from table before dropping underlying function | 19 |
+| DROP MASK | Must drop mask from table before dropping underlying function | 19 |
+| Access mode | Compute security mode: Standard (Shared) or Dedicated (Single User) | 19 |
+| Standard access mode | Shared compute; row filters/masks enforced via UDFs (DBR 12.2+) | 19 |
+| Dedicated access mode | Single-user compute; enforced natively (DBR 15.4+) | 19 |
+| Hashing | One-way function: PII → hash; irreversible without salt | 19 |
+| sha2(col, 256) | Databricks SHA-256 hashing; deterministic | 19 |
+| Tokenization | Reversible replacement; uses encryption key (from secret scope) | 19 |
+| aes_encrypt / aes_decrypt | Databricks tokenization using AES encryption | 19 |
+| Suppression | Remove PII entirely; column mask returning NULL or constant | 19 |
+| Generalization | Reduce precision while keeping analytical value (e.g., date → year) | 19 |
+| GDPR purge lifecycle | DELETE → REORG TABLE APPLY (PURGE) → VACUUM | 19 |
+| DELETE alone insufficient | With deletion vectors, only marks rows; doesn't physically remove | 19 |
+| REORG TABLE APPLY (PURGE) | Physically rewrites files removing soft-deleted rows | 19 |
+| time travel compliance gap | Deleted data queryable via time travel until VACUUM runs past retention | 19 |
+| delta.deletedFileRetentionDuration | How long deleted files are retained for time travel (default 7 days) | 19 |
+| VACUUM RETAIN 0 HOURS | Emergency compliance: removes all history, breaks time travel | 19 |
+| Purge propagation | Must delete in bronze first, then propagate to silver/gold via CDF | 19 |
+| Non-Delta upstream sources | GDPR applies to Kafka topics, raw files in cloud storage too | 19 |
+| Masking ≠ deletion | Masking does not satisfy GDPR "right to be forgotten" | 19 |
+
+
+---
+
+## Day 21 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| System tables | Databricks-managed Delta tables in system catalog; SQL-queryable observability | 21 |
+| system.billing.usage | Row per billable DBU; SKU, workspace, cluster/job/pipeline/warehouse metadata | 21 |
+| system.billing.list_prices | Historical SKU pricing; join with usage to compute $ cost | 21 |
+| system.access.audit | All audit events: logins, permission changes, resource creation/deletion | 21 |
+| system.access.table_lineage | Table-level read/write lineage | 21 |
+| system.access.column_lineage | Column-level lineage; does not capture literal values | 21 |
+| system.compute.clusters | SCD2 history of every cluster configuration | 21 |
+| system.compute.node_types | Static reference: available node types + hardware specs | 21 |
+| system.compute.node_timeline | Minute-by-minute CPU/memory per node; 90-day retention | 21 |
+| system.lakeflow.jobs | SCD2 history of job configurations | 21 |
+| system.lakeflow.job_run_timeline | Start/end/status of every job run | 21 |
+| system.lakeflow.job_task_run_timeline | Per-task timeline within a job run + compute IDs | 21 |
+| system.lakeflow.pipelines | SCD2 history of pipeline configurations | 21 |
+| system.lakeflow.pipeline_update_timeline | Per-update timeline with compute used | 21 |
+| system.query.history | Every SQL statement on SQL warehouse; text, duration, status | 21 |
+| SCD2 in system tables | Change history stored as new rows; requires QUALIFY rn=1 for current state | 21 |
+| statement_id | Join key linking query history to lineage tables and Query Profile | 21 |
+| SCD2 query pattern | ROW_NUMBER() OVER (PARTITION BY ... ORDER BY change_time DESC) QUALIFY rn=1 | 21 |
+| SCD2 365-day retention | Most system tables retain 365 days; lineage has 1-year window | 21 |
+| Lakeflow event log | Structured log per pipeline: audit, data quality, progress, lineage | 21 |
+| event_log() | Function to query pipeline event log | 21 |
+| Pipeline owner | Only owner can query event_log() directly | 21 |
+| event_type | Event category: flow_progress, update_progress, dataset_definition | 21 |
+| maturity_level | Event schema stability: STABLE, EVOLVING, DEPRECATED | 21 |
+| Pagination | REST APIs return has_more/next_page_token; must loop to get all records | 21 |
+
+
+---
+
+## Day 22 Updates
+
+| Term | Definition | Day |
+|---|---|---|
+| SQL Alert | Periodically runs a saved query; sends notification when condition is met | 22 |
+| Alert condition | Evaluates only first row; column must be numeric or boolean | 22 |
+| Pre-aggregate | Multi-row alert queries must collapse to single row | 22 |
+| Empty result state | Defines state when query returns zero rows | 22 |
+| CASE WHEN COUNT(*) = 0 | Pattern to detect missing data reliably | 22 |
+| Notify on OK | Alert also fires when condition returns to OK after being triggered | 22 |
+| Notification Destination | Workspace-level object: email, Slack, Teams, PagerDuty, webhook | 22 |
+| Admin-only destinations | Only workspace admins can create/update/delete destinations | 22 |
+| Job notifications | email_notifications and webhook_notifications at job/task level | 22 |
+| on_start | Notification fires when job run starts | 22 |
+| on_success | Notification fires when job run completes successfully | 22 |
+| on_failure | Notification fires when job run fails (FAILED, INTERNAL_ERROR, TIMED_OUT) | 22 |
+| on_duration_warning_threshold_exceeded | Fires only when health rule is defined | 22 |
+| on_streaming_backlog_exceeded | Fires when streaming backlog exceeds threshold (Public Preview) | 22 |
+| health.rules | Required config for duration/backlog notifications; not optional | 22 |
+| RUN_DURATION_SECONDS | Health metric for duration warning | 22 |
+| STREAMING_BACKLOG_* | Health metrics: BYTES, RECORDS, SECONDS, FILES | 22 |
+| 10-minute rolling average | Streaming backlog alerts use average, not instantaneous spike | 22 |
+| 30-minute resend | Sustained backlog alerts resend every 30 minutes | 22 |
+| Max 3 destinations | Per event type limit for job notifications | 22 |
+| notification_settings | Suppress notifications for skipped/canceled runs | 22 |
+| Task-level vs job-level | Skipped/canceled filtering must be set at both levels | 22 |
+| Absence-based alert | Alert when job hasnt run successfully in N hours; use SQL Alert on system tables | 22 |
+| Legacy alerts | Older separate-steps alert experience; still exists side-by-side | 22 |
+| Unified alert editor | Current Databricks alert setup | 22 |

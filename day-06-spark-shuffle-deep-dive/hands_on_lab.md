@@ -1,5 +1,7 @@
 # Day 6 — Hands-On Lab: Spark Shuffle Deep-Dive
 
+> ⚠️ **Correction notice:** This version fixes two issues found in an earlier draft: (1) Step 2b claimed "1000 reduce tasks, each handling 1000 rows" for a groupBy that only has 10 distinct keys — in reality, with 1000 shuffle partitions and only 10 possible key values, roughly 990 of those partitions would be empty; the step now describes this correctly (and it's actually a better illustration of the "too many partitions" overhead problem). (2) Step 6b compared an integer column to a string literal (`F.col("bucket") == "5"`), which has version/ANSI-mode-dependent behavior — fixed to compare against the integer `5`.
+
 ## Lab Objectives
 
 1. Observe shuffle write and read metrics in the Spark UI
@@ -91,8 +93,13 @@ result = df.groupBy((F.col("id") % 10).alias("bucket")).count().collect()
 time_many = time.time() - start
 print(f"1000 shuffle partitions: {time_many:.3f}s")
 
-# Check Spark UI: 1000 reduce tasks (one per partition), each handling 1000 rows
-# Task scheduling overhead dominates
+# Check Spark UI: this groupBy only has 10 distinct keys (id % 10), so with
+# 1000 shuffle partitions, roughly 990 of them receive ZERO rows and complete
+# almost instantly, while only ~10 partitions actually get data.
+# The overhead here isn't "each task does more work" — it's the opposite:
+# Spark still has to schedule, launch, and track 1000 mostly-empty tasks,
+# and that bookkeeping overhead is what makes this slower than a
+# right-sized partition count for such low cardinality.
 ```
 
 ### 2c. Appropriate shuffle partitions
@@ -108,7 +115,7 @@ time_appropriate = time.time() - start
 print(f"50 shuffle partitions: {time_appropriate:.3f}s")
 
 print(f"\nComparison: 5={time_few:.3f}s, 50={time_appropriate:.3f}s, 1000={time_many:.3f}s")
-print("Too few = OOM risk on large data. Too many = scheduling overhead. Right size = balance.")
+print("Too few = OOM risk on large data. Too many = scheduling overhead from empty/mostly-idle tasks. Right size = balance.")
 ```
 
 ### 2d. Reset shuffle partitions
@@ -305,7 +312,7 @@ df_bad = (spark.range(100000)
     .repartition(50)
     .groupBy((F.col("id") % 10).alias("bucket"))
     .agg(F.sum("id").alias("total"))
-    .filter(F.col("bucket") == "5")  # Filter after aggregation
+    .filter(F.col("bucket") == 5)  # Filter after aggregation — compare int to int
 )
 df_bad.explain("formatted")
 
@@ -359,7 +366,7 @@ print(f"More partitions: {time.time() - start:.3f}s")
 # Just verify and run
 print(f"AQE: {spark.conf.get('spark.sql.adaptive.skewJoin.enabled')}")
 
-# 5. Fix 3: manual salt (from Day 4)
+# 5. Fix 3: manual salt (from Day 4's salted-groupBy pattern)
 ```
 
 ---
@@ -368,7 +375,7 @@ print(f"AQE: {spark.conf.get('spark.sql.adaptive.skewJoin.enabled')}")
 
 - [ ] Observed Shuffle Write and Shuffle Read metrics in Spark UI
 - [ ] Compared groupBy (with shuffle) vs filter (no shuffle) execution times
-- [ ] Tested too few vs too many vs appropriate shuffle partitions
+- [ ] Tested too few vs too many vs appropriate shuffle partitions, and understood *why* too-many hurts (empty-task overhead, not larger per-task work)
 - [ ] Created intentional skew and observed one slow task in Spark UI
 - [ ] Verified AQE skew join optimization reduces skew impact
 - [ ] (If memory constrained) Observed spill metrics

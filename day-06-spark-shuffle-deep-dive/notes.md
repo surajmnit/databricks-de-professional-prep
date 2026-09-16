@@ -1,5 +1,7 @@
 # Day 6 — Spark Shuffle Deep-Dive
 
+> ⚠️ **Correction notice:** This version fixes one issue found in an earlier draft: the manual salted-join example had a syntax error — `expr("concat(key, '-', cast(salt as string)")` has unbalanced parentheses (`concat(` and `cast(` both open, but only one `)` closes) and would raise a parse error the moment Spark evaluated it. The example is rewritten below using the same clean, verified pattern used in Day 3.
+
 ## Exam Objectives
 
 This day covers **Section 6: Cost & Performance Optimization (13%)** — specifically the most expensive operation in Spark: the shuffle.
@@ -180,6 +182,8 @@ For a 10 GB groupBy with 10 shuffle partitions: 10 GB / 10 = 1 GB per partition 
 | More objects in memory | GC pressure |
 | Shuffle write: 100 tasks × 200 partitions = 20,000 files | Too many files, slow |
 
+**Exam trap:** setting shuffle partitions far higher than the number of *distinct keys* in the aggregation doesn't help — most of those partitions will simply sit empty (0 bytes, 0 records), while the few partitions that do receive data are unaffected in size. The overhead here is purely scheduling/bookkeeping cost for thousands of empty tasks, not better load balancing.
+
 ### Too Few Shuffle Partitions
 
 | Problem | Impact |
@@ -274,23 +278,34 @@ When AQE detects skew:
 
 ### Manual Skew Handling
 
-When AQE is insufficient:
+When AQE is insufficient, salt **both** sides of the join consistently — the large (skewed) side gets a random salt suffix, and the small side must be exploded/replicated across every possible salt value so a match still exists:
 
 ```python
-from pyspark.sql.functions import expr, rand
+from pyspark.sql.functions import rand, explode, array, lit, concat, col
 
-# Salted join pattern
 n_salt = 10
-df_large = df_large.withColumn("salt", (rand() * n_salt).cast("int"))
-df_large = df_large.withColumn("key_salted", expr("concat(key, '-', salt)"))
 
-# Also salt the small table
-small_salted = df_small.withColumn("salt", expr("explode(array(" + ",".join([f"'{i}'" for i in range(n_salt)]) + "))"))
-small_salted = small_salted.withColumn("key_salted", expr("concat(key, '-', cast(salt as string)"))
+# Salt the large (skewed) table
+df_large_salted = (
+    df_large
+    .withColumn("salt", (rand() * n_salt).cast("int"))
+    .withColumn("key_salted", concat(col("key"), lit("-"), col("salt")))
+)
 
-# Join
-result = df_large.join(small_salted, "key_salted")
+# Replicate every row of the small table across all n_salt buckets, so that
+# whichever salt value a large-table row was randomly assigned, a matching
+# small-table row exists
+df_small_salted = (
+    df_small
+    .withColumn("salt", explode(array([lit(i) for i in range(n_salt)])))
+    .withColumn("key_salted", concat(col("key"), lit("-"), col("salt")))
+)
+
+# Join on the salted key
+result = df_large_salted.join(df_small_salted, "key_salted")
 ```
+
+**Exam trap:** salting only the large side (or giving the small side a fabricated key unrelated to its real join column) silently drops most matches — no error is raised, the join just returns far fewer rows than it should. Always sanity-check row counts against the unsalted result while developing a salted join (see Day 3's hands-on lab for exactly this check).
 
 ---
 
@@ -331,4 +346,4 @@ The small table is serialized and sent to all executors. The large table is proc
 - **Day 5:** DAG stage boundaries are where shuffles occur
 - **Day 7:** Executor memory used during shuffle (sort, aggregation, spill)
 - **Day 8:** Spark UI shuffle read/write metrics for diagnosis
-- **Day 3:** Broadcast join optimization
+- **Day 3:** Broadcast join optimization; the salted-*join* pattern (join-side salting must replicate the small table, unlike salted-*groupBy* re-aggregation)
