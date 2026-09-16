@@ -1,5 +1,7 @@
 # Day 5 — Hands-On Lab: Spark Execution, DAG, and Physical Plans
 
+> ⚠️ **Correction notice:** This version fixes one runnable-code bug found in an earlier draft: `df.write.mode("overwrite").format("noop").execute()` used `.execute()`, which is not a real `DataFrameWriter` method and would raise an `AttributeError`. Replaced with the correct `.save()`.
+
 ## Lab Objectives
 
 1. Observe lazy evaluation — confirm transformations are not executed until actions
@@ -105,7 +107,7 @@ print("\n=== Plan for wide transformation (groupBy) ===")
 df_wide.explain("formatted")
 ```
 
-**What to look for:** "Exchange" operator appears — this is the shuffle boundary, creating a new Stage. The formatted explain shows Stage separation via the Exchange node.
+**What to look for:** "Exchange" operator appears — this is the shuffle boundary, creating a new Stage. The formatted explain shows Stage separation via the Exchange node. You should also see two `HashAggregate` nodes — a `partial_count` before the Exchange, and the final `count` after it (see Day 5 `notes.md` Part 4).
 
 ### 2c. Multiple shuffles — multiple Stage boundaries
 
@@ -148,8 +150,9 @@ df.groupBy("region").count().explain("formatted")
 
 Read the formatted output bottom-to-top (this is execution order):
 - Bottom: Scan (read data)
-- Middle: Exchange (shuffle — new Stage boundary)
-- Top: HashAggregate (aggregation in new Stage)
+- Then: HashAggregate with `partial_count` (pre-shuffle, combines values within each partition)
+- Then: Exchange (shuffle — new Stage boundary)
+- Top: HashAggregate with `count` (post-shuffle, combines partial results into the final answer)
 
 ### 3b. Join — observe BroadcastExchange vs SortMergeJoin
 
@@ -210,7 +213,7 @@ job3 = df.take(10)
 print(f"Job 3 (take): {job3}")
 
 # Job 4: write (separate Job)
-df.write.mode("overwrite").format("noop").execute()
+df.write.mode("overwrite").format("noop").save()
 print("Job 4 (write): completed")
 ```
 
@@ -307,7 +310,7 @@ print(f"Window-then-filter: {time.time() - start:.3f}s")
 - [ ] Confirmed two actions without caching = two independent reads
 - [ ] Confirmed two actions with caching = second action reads from cache
 - [ ] Identified narrow transformations (no Exchange in plan)
-- [ ] Identified wide transformations (Exchange = new Stage boundary)
+- [ ] Identified wide transformations (Exchange = new Stage boundary; saw partial vs. final HashAggregate)
 - [ ] Observed BroadcastExchange vs SortMergeJoin in join plans
 - [ ] Confirmed multiple actions = multiple independent Jobs
 - [ ] Read formatted explain bottom-to-top (execution order)

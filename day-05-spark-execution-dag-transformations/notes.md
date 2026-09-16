@@ -1,5 +1,7 @@
 # Day 5 — Spark Execution: DAG, Lazy Evaluation, Transformations, and Physical Plans
 
+> ⚠️ **Correction notice:** This version fixes two issues found in an earlier draft: (1) the "Key symbols in physical plans" table incorrectly defined the `*` prefix as "column used in later stages (passed through shuffle)" — this directly contradicted Part 7 of the same document, which correctly identifies `*` as the whole-stage code generation marker; the table is now corrected to match. (2) The example formatted physical plan mixed up aggregate function names (`merged_sum` inside a `count` example) and showed three stacked `HashAggregate` nodes where real two-phase aggregation only has two (partial, pre-shuffle; final, post-shuffle) — the example is now accurate.
+
 ## Exam Objectives
 
 This day covers **Section 6: Cost & Performance Optimization (13%)** — specifically how Spark executes queries, where time is spent, and why some operations are expensive.
@@ -179,24 +181,23 @@ In the Spark UI Jobs -> Stages view:
 df.groupBy("region").count().explain("formatted")
 ```
 
-The formatted output shows operators in execution order (bottom to top):
+The formatted output shows operators in execution order (bottom to top). Aggregations that require a shuffle are always split into two phases: a **partial** aggregation before the shuffle (pre-combines values within each input partition, reducing shuffle volume) and a **final** aggregation after the shuffle (combines the partial results per key):
 
 ```
 == Physical Plan ==
 * HashAggregate(keys=[region#1], functions=[count(1)])
 +- Exchange hashpartitioning(region#1, 200)
-   +- * HashAggregate(keys=[region#1], functions=[merged_sum(count#2L)])
-      +- * HashAggregate(keys=[region#1], functions=[count(1)])
-         +- * Scan parquet ...
+   +- * HashAggregate(keys=[region#1], functions=[partial_count(1)])
+      +- * Scan parquet ...
 ```
 
 **Key symbols in physical plans:**
 
 | Symbol | Meaning |
 |---|---|
-| * | Column used in later stages (passed through shuffle) |
+| `*` (prefix) | **Whole-stage code generation** is active for this operator — Spark collapsed it (and often its neighbors) into a single generated JVM function for faster execution |
 | Exchange | Shuffle operation (new stage boundary) |
-| HashAggregate | Hash-based aggregation (used for groupBy) |
+| HashAggregate | Hash-based aggregation (used for groupBy); appears as `partial_*` before an Exchange and the plain function name after |
 | SortAggregate | Sort-based aggregation (used when hash not applicable) |
 | Scan | Reading data from storage |
 | BroadcastExchange | Broadcast join (small table sent to all executors) |
@@ -204,6 +205,8 @@ The formatted output shows operators in execution order (bottom to top):
 | Filter | Predicate filter |
 | Project | Column selection (SELECT clause) |
 | TakeOrdered | Ordered result retrieval |
+
+**Exam trap:** Don't confuse the `*` prefix (whole-stage codegen) with anything about shuffle or column lineage — it purely indicates code-generation, and it can appear on operators both before and after an `Exchange`.
 
 ### Shuffle Write and Shuffle Read
 
@@ -312,7 +315,7 @@ Spark 3.x uses whole-stage code generation to collapse multiple operators into a
 # Whole-stage codegen: single generated function processes row through all operators
 ```
 
-**In explain output:** Whole-stage codegen shows as `*` prefix on operators.
+**In explain output:** Whole-stage codegen shows as `*` prefix on operators — the same symbol defined in Part 4's table above. Operators separated by an `Exchange` (shuffle) are always in different codegen stages, since codegen cannot span a shuffle boundary.
 
 ---
 
@@ -357,7 +360,7 @@ df = spark.read.parquet("/data/").select("status", "region", "amount") \\
               .filter(F.col("status") == "active")
 ```
 
-Catalyst often pushes column selection automatically, but explicit control helps.
+Catalyst often pushes column selection and simple, deterministic filters automatically (column pruning, predicate pushdown — Part 1), but explicit control still helps when a source doesn't support pushdown or the filter depends on something Catalyst can't reason about (a UDF, for example).
 
 ---
 
