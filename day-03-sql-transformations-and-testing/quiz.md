@@ -87,14 +87,14 @@ A. DataFrame.pipe()  |  B. DataFrame.transform()  |  C. DataFrame.apply()  |  D.
 
 ## Question 7
 
-**Objective:** Use assertDataFrameEqual with correct options.
+**Objective:** Understand assertDataFrameEqual's default row-order behavior.
 
-A test uses assertDataFrameEqual with df.orderBy('name') and an expected DataFrame in a different row order. The test fails. What is needed?
+A test calls `assertDataFrameEqual(actual, expected)` where `actual` and `expected` contain exactly the same rows, but in a different order. Neither `checkRowOrder` nor any other optional parameter is passed. What is the outcome?
 
-A. Use assertSchemaEqual instead
-B. Pass checkRowOrder=False to make comparison order-independent
-C. Remove orderBy from both DataFrames
-D. Use checkSchema=False
+A. The test fails, because `assertDataFrameEqual` checks row order by default
+B. The test passes, because `checkRowOrder` defaults to `False` — row order is not checked unless explicitly requested
+C. The test fails with a schema mismatch error, unrelated to row order
+D. The result is non-deterministic and may pass or fail randomly between runs
 
 ---
 
@@ -152,14 +152,16 @@ D. Partition the fact table by join key before joining
 
 ## Question 12
 
-**Objective:** Use control flow in pipeline contexts.
+**Objective:** Apply the salted-join pattern correctly (a common implementation mistake).
 
-A pipeline should run silver transform only if bronze has more than 10,000 records. Which pattern is correct?
+A data engineer fixes a skewed join between a 200 GB fact table and a 50 MB dimension table by salting the fact table's join key with a random integer 0–9 (e.g., `key-7`). They leave the dimension table's join key completely unchanged. After running the join, the result has far fewer rows than the unsalted version produced.
 
-A. if/else using spark.read against bronze table count (classic jobs)
-B. for/each loop over bronze table rows
-C. Lakeflow pipeline with if/else control flow operators
-D. Both A and C are valid; A for classic jobs, C for Lakeflow
+What is the most likely cause?
+
+A. The salt value should be generated deterministically, not with `rand()`
+B. The dimension table's join key was never replicated across the salt values, so a fact row salted to `key-7` has no matching dimension row to join against
+C. Adaptive Query Execution automatically reverses manually written salting logic
+D. Salting only works correctly when the two tables are close in size
 
 ---
 
@@ -195,10 +197,10 @@ Broadcasting a 500 GB fact table causes OOM on every executor. The 5 MB dim is a
 
 **Why others wrong:** A=pipeline to RDD-like iterator. C=not a DataFrame method. D=works on RDDs, not DataFrames.
 
-### Q7: B — Pass checkRowOrder=False
-assertDataFrameEqual is order-dependent by default. Use checkRowOrder=False for order-independent comparison.
+### Q7: B — The test passes, because `checkRowOrder` defaults to `False`
+`assertDataFrameEqual`'s `checkRowOrder` parameter defaults to `False` (verified against current PySpark documentation) — meaning row order is **not** checked unless you explicitly pass `checkRowOrder=True`. This is a deliberate design choice, since PySpark DataFrame row ordering is non-deterministic in general unless explicitly sorted.
 
-**Why others wrong:** A=different error for schema mismatch. C=removing orderBy does not help if data order differs. D=schema is not the issue.
+**Why others wrong:** A states the opposite of the documented default — a common and costly thing to memorize backwards. C invents an unrelated schema-mismatch mechanic; same schema, same rows in a different order does not trigger a schema error. D is false — the outcome is fully deterministic given the `checkRowOrder` setting, not a coin flip.
 
 ### Q8: B — GROUPING SETS ((region, product_category), (region), ())
 ROLLUP(a,b) produces: (a,b), (a), grand total. This matches the three GROUPING SETS levels in option B.
@@ -208,7 +210,7 @@ ROLLUP(a,b) produces: (a,b), (a), grand total. This matches the three GROUPING S
 ### Q9: B — Filtering before the join reduces data volume
 Joins process all rows from both inputs. Reducing the dimension from 10M to 100 rows before the join dramatically reduces join cost.
 
-**Why others wrong:** A=CTEs are not materialized. C=Spark does not auto-reorder joins in complex queries. D=filter pushdown is generally enabled.
+**Why others wrong:** A=CTEs are not materialized. C=Spark does not auto-reorder joins in complex queries. D=filter pushdown is generally enabled — Catalyst does push simple, deterministic filters below joins automatically in many cases; the explicit rewrite matters most for filters that can't be pushed down automatically.
 
 ### Q10: C — UNPIVOT using LATERAL VIEW EXPLODE(MAP(...))
 Wide-to-long transformation requires UNPIVOT. PIVOT does the opposite (rows to columns).
@@ -216,14 +218,14 @@ Wide-to-long transformation requires UNPIVOT. PIVOT does the opposite (rows to c
 **Why others wrong:** A=collapses rows. B=pivots rows to columns, not columns to rows. D=not standard unpivot approach.
 
 ### Q11: C — Salt the join
-Skew causes one partition to receive 40% of fact rows. Salting distributes skewed keys across partitions by replicating dim rows.
+Skew causes one partition to receive 40% of fact rows. Salting distributes skewed keys across partitions by replicating dim rows across every salt value.
 
-**Why others wrong:** A=memory increase does not fix partition imbalance. B=disabling AQE removes automatic skew handling. D=partitioning by key does not fix the skew itself.
+**Why others wrong:** A=memory increase does not fix partition imbalance. B=disabling AQE removes automatic skew handling, which doesn't help and isn't the "direct" fix requested. D=partitioning by key does not fix the skew itself — the skewed key's rows would still all land in one partition.
 
-### Q12: D — Both A and C are valid
-Classic jobs: Python if/else using spark.read table counts. Lakeflow pipelines: declarative if/else operators. Both are correct in their respective contexts.
+### Q12: B — The dimension table's join key was never replicated across the salt values
+Salting only works if **both** sides are made consistent: the large side gets a random salt appended to its key, and the small side must be exploded/replicated once per possible salt value so a matching row exists for every salt a large-side row could have been assigned. Leaving the dimension table's key unsalted means the salted fact key (e.g., `key-7`) can never match the dimension table's plain key (`key`) — most rows are silently dropped, with no error raised.
 
-**Why others wrong:** A/C alone are each incomplete. B=for/each is for iteration, not conditional checks.
+**Why others wrong:** A — determinism of the salt value is irrelevant; the bug is that only one side was salted. C — AQE does not inspect or reverse manually written join logic; it only affects Spark's own automatic query planning. D — salting is specifically useful when table sizes are very different (a large skewed table + a small dimension table), which is exactly this scenario, not a case where it "only works" for similarly-sized tables.
 
 ---
 
@@ -237,9 +239,9 @@ Classic jobs: Python if/else using spark.read table counts. Lakeflow pipelines: 
 | 4 | Hard | LAST_VALUE default frame behavior |
 | 5 | Easy | Broadcast join — which table to broadcast |
 | 6 | Easy | DataFrame.transform() method |
-| 7 | Medium | assertDataFrameEqual order sensitivity |
+| 7 | Hard | assertDataFrameEqual is order-independent by default |
 | 8 | Medium | ROLLUP vs CUBE vs GROUPING SETS |
 | 9 | Medium | Join ordering and early filtering |
 | 10 | Medium | PIVOT vs UNPIVOT distinction |
 | 11 | Hard | Skew join handling — salted join |
-| 12 | Medium | Control flow in classic jobs vs Lakeflow |
+| 12 | Hard | Salted-join implementation mistake — unsalted dimension side |

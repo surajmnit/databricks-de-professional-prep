@@ -5,8 +5,9 @@
 1. Practice window functions (ROWS vs RANGE, ranking, LAG/LEAD)
 2. Implement LEFT SEMI and LEFT ANTI joins
 3. Configure a broadcast join and observe the plan
-4. Build a testable ETL pipeline using .transform()
-5. Write unit tests with assertDataFrameEqual and assertSchemaEqual
+4. Fix a real skewed join using the salted-join pattern
+5. Build a testable ETL pipeline using .transform()
+6. Write unit tests with assertDataFrameEqual and assertSchemaEqual
 
 **Note:** All steps run in a Databricks notebook. Community Edition is sufficient.
 
@@ -57,7 +58,7 @@ df_range = df.withColumn("cumsum_range", spark_sum("amount").over(range_window))
 df_range.orderBy("grp", "date").show()
 ```
 
-**What to observe:** When ORDER BY has no duplicates, ROWS and RANGE produce the same results. The difference emerges with duplicate ORDER BY values — RANGE groups by value, ROWS counts by physical row position.
+**What to observe:** When ORDER BY has no duplicates, ROWS and RANGE produce the same results. The difference emerges with duplicate ORDER BY values — RANGE groups by value (both 2024-01-01 rows get the same cumulative total of 300, since RANGE includes every peer row sharing that value), ROWS counts by physical row position (the two 2024-01-01 rows would differ if their physical order mattered — here they still both land at 300 because both are already included by the time either is the "current row" under ROWS UNBOUNDED PRECEDING, so compare this against Step 1b's output carefully rather than assuming they must differ on every dataset).
 
 ---
 
@@ -86,9 +87,9 @@ from pyspark.sql.functions import row_number, rank, dense_rank
 
 window = Window.partitionBy("dept").orderBy(col("salary").desc())
 
-df_ranked = df_emp \\
-    .withColumn("row_num", row_number().over(window)) \\
-    .withColumn("rank", rank().over(window)) \\
+df_ranked = df_emp \
+    .withColumn("row_num", row_number().over(window)) \
+    .withColumn("rank", rank().over(window)) \
     .withColumn("dense_rank", dense_rank().over(window))
 
 df_ranked.orderBy("dept", col("salary").desc()).show()
@@ -148,6 +149,11 @@ anti_result.show()
 ### 3c. Verify equivalence with IN/NOT IN subqueries
 
 ```python
+# Register the DataFrames as temp views first — spark.sql() can only see
+# named views/tables, not Python variable names
+customers.createOrReplaceTempView("customers")
+orders.createOrReplaceTempView("orders")
+
 # LEFT SEMI equivalent: IN subquery
 spark.sql("""
     SELECT * FROM customers WHERE customer_id IN (SELECT customer_id FROM orders)
@@ -232,11 +238,73 @@ On a small CE cluster this may not crash but you will see the broadcast metadata
 
 ---
 
-## Step 5 — Build a Testable ETL Pipeline with .transform()
+## Step 5 — Fix a Real Skewed Join with Salting
+
+**Objective:** Reproduce a skewed join, confirm the skew signature, then fix it with the corrected salted-join pattern from `notes.md`.
+
+### 5a. Create a skewed join scenario
+
+```python
+# 90% of fact rows share one key — a classic skew scenario
+heavy_fact = [("heavy_key", i) for i in range(90_000)]
+light_fact = [(f"key_{i}", i) for i in range(10_000)]
+fact_skewed = spark.createDataFrame(heavy_fact + light_fact, ["join_key", "value"])
+
+dim_small = spark.createDataFrame(
+    [("heavy_key", "Heavy Segment")] + [(f"key_{i}", f"Segment_{i}") for i in range(10_000)],
+    ["join_key", "segment_name"]
+)
+
+# Disable AQE skew handling temporarily so the skew is visible unmitigated
+spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "false")
+
+result_skewed = fact_skewed.join(dim_small, "join_key")
+result_skewed.explain("formatted")
+result_skewed.count()
+```
+
+**What to observe in the Spark UI Stages tab:** one task should show dramatically higher shuffle read/duration than the rest — the `"heavy_key"` partition dominating.
+
+### 5b. Apply the salted-join fix
+
+```python
+from pyspark.sql.functions import rand, explode, array, lit, concat, col
+
+n_salt = 10
+
+fact_salted = (
+    fact_skewed
+    .withColumn("salt", (rand() * n_salt).cast("int"))
+    .withColumn("join_key_salted", concat(col("join_key"), lit("-"), col("salt")))
+)
+
+dim_salted = (
+    dim_small
+    .withColumn("salt", explode(array([lit(i) for i in range(n_salt)])))
+    .withColumn("join_key_salted", concat(col("join_key"), lit("-"), col("salt")))
+)
+
+result_salted = fact_salted.join(dim_salted, "join_key_salted")
+print(f"Row count matches unsalted result: {result_salted.count() == result_skewed.count()}")
+result_salted.explain("formatted")
+```
+
+**What to observe:** row counts match the unsalted version exactly (the salting is purely a physical redistribution trick — it must never change the logical result), and the Spark UI Stages tab should now show much more even task durations, since the `"heavy_key"` rows are spread across `n_salt` partitions instead of one.
+
+```python
+# Re-enable AQE skew handling for the rest of the notebook
+spark.conf.set("spark.sql.adaptive.skewJoin.enabled", "true")
+```
+
+**Break it on purpose:** comment out the `explode(array(...))` line on `dim_salted` and instead just add a constant `salt = 0` column, then re-run the join. **Predict then verify:** does the row count still match `result_skewed`? **Answer:** No — you'll only get matches for large-table rows that happened to be randomly salted to `0`, silently dropping roughly `(n_salt - 1) / n_salt` of the real matches. This reproduces exactly the kind of broken salting that looks like it works (no error is raised) but silently returns wrong data — the row-count check above is what would have caught it.
+
+---
+
+## Step 6 — Build a Testable ETL Pipeline with .transform()
 
 **Objective:** Convert inline DataFrame operations into transform functions that can be unit tested.
 
-### 5a. Define transform functions
+### 6a. Define transform functions
 
 ```python
 from pyspark.sql import DataFrame
@@ -262,7 +330,7 @@ def run_silver_pipeline(df: DataFrame) -> DataFrame:
     )
 ```
 
-### 5b. Test each transform function individually
+### 6b. Test each transform function individually
 
 ```python
 test_df = spark.createDataFrame([
@@ -285,7 +353,7 @@ print("After standardize_names:")
 standardized.select("first_name").show()
 ```
 
-### 5c. Run full pipeline
+### 6c. Run full pipeline
 
 ```python
 result = run_silver_pipeline(test_df)
@@ -296,9 +364,9 @@ result.printSchema()
 
 ---
 
-## Step 6 — Write Unit Tests with assertDataFrameEqual
+## Step 7 — Write Unit Tests with assertDataFrameEqual
 
-**Objective:** Learn the testing utilities the exam covers.
+**Objective:** Learn the testing utilities the exam covers, and confirm the order-independence default for yourself.
 
 ```python
 from pyspark.testing import assertDataFrameEqual, assertSchemaEqual
@@ -331,6 +399,25 @@ def test_pipeline_schema(spark):
 # Run tests
 test_clean_pii_masks_emails(spark)
 test_pipeline_schema(spark)
+```
+
+### Confirm the row-order default for yourself
+
+```python
+# Same data, deliberately different row order
+actual_order = spark.createDataFrame([("Bob", 25), ("Alice", 30)], ["name", "age"])
+expected_order = spark.createDataFrame([("Alice", 30), ("Bob", 25)], ["name", "age"])
+
+# Default: passes, because checkRowOrder defaults to False
+assertDataFrameEqual(actual_order, expected_order)
+print("Default comparison passed despite different row order — as expected")
+
+# Force order sensitivity: this one should now raise
+try:
+    assertDataFrameEqual(actual_order, expected_order, checkRowOrder=True)
+except AssertionError as e:
+    print("checkRowOrder=True correctly failed on the reordered rows:")
+    print(str(e)[:300])
 ```
 
 ### Break it on purpose: assertDataFrameEqual with wrong expected value
@@ -385,11 +472,14 @@ def test_deduplication(spark):
 
 - [ ] Observed ROWS vs RANGE difference with duplicate ORDER BY values
 - [ ] Applied ROW_NUMBER, RANK, DENSE_RANK for deduplication
-- [ ] Implemented LEFT SEMI and LEFT ANTI joins
+- [ ] Implemented LEFT SEMI and LEFT ANTI joins (via DataFrame API and SQL subqueries)
 - [ ] Inspected broadcast join plan vs sort-merge plan
+- [ ] Reproduced a skewed join, confirmed the skew signature, and fixed it with a correct salted join
+- [ ] Broke the salted join on purpose (constant salt on one side) and observed the silent row-count mismatch
 - [ ] Created transform() pipeline functions
 - [ ] Unit tested individual transform functions
 - [ ] Written assertDataFrameEqual and assertSchemaEqual tests
+- [ ] Confirmed assertDataFrameEqual's row-order default for yourself with `checkRowOrder=True`
 - [ ] Verified test failure output with broken assertion
 - [ ] (Stretch) Completed deduplication with ROW_NUMBER
 
@@ -398,11 +488,6 @@ def test_deduplication(spark):
 ## Cross-References
 
 - Day 5: Wide vs narrow transformations — groupBy creates shuffle boundaries
-- Day 6: Shuffle behavior during large joins
+- Day 6: Shuffle behavior during large joins; AQE skew join vs. manual salting
 - Day 8: Query Profile for identifying inefficient join strategies
 - Day 17: Quarantine patterns and data quality validation
-"""
-
-with open(f"{repo}/hands_on_lab.md", "w") as f:
-    f.write(content)
-print("hands_on_lab.md written")
