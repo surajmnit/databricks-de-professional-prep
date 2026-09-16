@@ -14,6 +14,8 @@
 
 **ROWS vs RANGE:** ROWS = physical row count. RANGE = logical value grouping. Same result when ORDER BY has no duplicates. Differ when ORDER BY has duplicates.
 
+**Off-by-one trap:** `ROWS BETWEEN N PRECEDING AND CURRENT ROW` spans **N + 1** rows total. A true 7-row moving average needs `6 PRECEDING`, not `7 PRECEDING`.
+
 ## Join Types
 
 | Join | Returns |
@@ -27,8 +29,9 @@
 
 ## Skew Join Fix
 
-Salt the join: add random salt column to large table, replicate small table rows by salt.
-AQE auto-handles skew: spark.sql.adaptive.skewJoin.enabled = true (default).
+Salt the join: add a random salt column to the **large** table's key, and **explode/replicate every row of the small table across all salt values** so every salted large-side key has a matching small-side row. AQE auto-handles skew: `spark.sql.adaptive.skewJoin.enabled = true` (default) — try this before manual salting.
+
+**Common implementation bug:** salting only one side (or inventing placeholder keys on the small side) silently drops most matches, with no error raised. Always verify row counts against the unsalted result while testing a salted join.
 
 ## Aggregations
 
@@ -45,12 +48,14 @@ PIVOT: rows to columns. UNPIVOT (LATERAL VIEW EXPLODE(MAP(...))): columns to row
 | Method | Purpose |
 |---|---|
 | DataFrame.transform(fn) | Chain transformation functions; each independently testable |
-| assertDataFrameEqual(df1, df2) | Compare DataFrames; order-independent with checkRowOrder=False |
+| assertDataFrameEqual(df1, df2) | Compare DataFrames; **order-independent by default** (`checkRowOrder=False`) |
 | assertSchemaEqual(df, schema) | Compare schemas exactly |
+
+**Exam trap (direction matters):** `assertDataFrameEqual` does **not** check row order unless you pass `checkRowOrder=True`. Don't memorize this backwards — `False` is the default, and it means "order doesn't matter."
 
 **LAST_VALUE exam trap:** Default frame is RANGE UNBOUNDED PRECEDING TO CURRENT ROW. 
 Always add ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING for true last-in-partition.
 
 ## Join Ordering Rule
 
-Filter BEFORE joining. Use CTEs to push filters early.
+Filter BEFORE joining. Use CTEs to push filters early — most valuable when the filter can't already be pushed down automatically by Catalyst (e.g., it depends on a UDF or non-deterministic expression).

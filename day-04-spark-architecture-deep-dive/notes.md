@@ -1,5 +1,7 @@
 # Day 4 — Spark Architecture Deep-Dive
 
+> ⚠️ **Correction notice:** This version fixes one issue found in an earlier draft: the Cluster Manager table incorrectly associated Azure HDInsight (an unrelated Azure big-data service, not part of Databricks) with Databricks, and implied GCP Databricks specifically uses Kubernetes as an exam-testable fact. Both are corrected below, consistent with the same fix already applied in Day 1.
+
 ## Exam Objectives
 
 This day is the foundation for **Section 6: Cost & Performance Optimization (13%)** and **Section 5: Monitoring and Alerting (10%)**.
@@ -33,14 +35,9 @@ The entry point. It:
 - Hosts the Spark UI at driver:4040
 
 **3. Cluster Manager**
-Allocates containers for executors on cluster nodes.
+Allocates containers for executors on cluster nodes. **On Databricks, this is fully abstracted away** — you choose a cloud (AWS/Azure/GCP) and node type, and Databricks provisions and manages the underlying driver/executor containers itself. You never configure or select a specific OSS cluster manager (Standalone/YARN/Kubernetes/Mesos) on Databricks, and there is no reliable one-to-one mapping between a given cloud and a specific OSS cluster manager exposed to you.
 
-| Cluster Manager | Databricks Use |
-|---|---|
-| Standalone | Community Edition |
-| YARN | Azure HDInsight |
-| Kubernetes | GCP Databricks |
-| Mesos | Deprecated |
+**Exam trap:** don't assume "GCP Databricks uses Kubernetes" as an exam-testable fact, and don't confuse unrelated products — Azure HDInsight is a separate Azure big-data service, not part of Databricks at all. The exam tests your understanding of **Spark execution behavior** (Driver/Executor/Stage/Task, memory, shuffle), not which literal cluster-manager daemon runs underneath Databricks' compute layer.
 
 **4. Executors (Worker Nodes)**
 Each executor is a JVM that:
@@ -233,7 +230,7 @@ spark.conf.set('spark.sql.shuffle.partitions', 400)  # Override
 
 ---
 
-## Part 6 — Cluster Manager and Dynamic Allocation
+## Part 6 — Dynamic Allocation and Executor Concurrency
 
 ### Dynamic Allocation
 

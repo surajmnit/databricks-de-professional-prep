@@ -1,11 +1,13 @@
 # Day 4 — Hands-On Lab: Spark Architecture Deep-Dive
 
+> ⚠️ **Correction notice:** This version fixes two runnable-code bugs found in an earlier draft: (1) the manual salting step's final aggregation referenced a `"count"` column on `df_salted` that never existed on that DataFrame (it only existed on a separate, discarded intermediate DataFrame), which would raise an `AnalysisException`; (2) `sc._jsc.sc().statusTracker().getActiveExecutorIds()` is not a real Spark API method — replaced with the actual, documented `StatusTracker.getExecutorInfos()`.
+
 ## Lab Objectives
 
 1. Observe the Job / Stage / Task hierarchy in the Spark UI
 2. Distinguish driver OOM from executor OOM
 3. Compare partition-to-task mapping for different operations
-4. Trigger data skew and observe the Spark UI signature
+4. Trigger data skew and observe the Spark UI signature, then fix it correctly with salting
 5. Inspect Spark configuration and executor registration
 
 **Note:** All steps run in a Databricks notebook. Community Edition is sufficient.
@@ -48,7 +50,7 @@ df_grouped.explain("formatted")
 ```
 
 **What to observe:**
-- Stage 0: Exchange (shuffle write) — starts when groupBy is encountered
+- Stage 0: Read + filter + shuffle write — starts when groupBy is encountered
 - Stage 1: Result stage — receives shuffle output, runs count, returns to driver
 
 ### 1c. Multiple actions = multiple independent Jobs
@@ -154,7 +156,7 @@ print("Cache cleared")
 
 ## Step 4 — Data Skew: One Slow Task
 
-**Objective:** Create intentional skew and observe the Spark UI signature.
+**Objective:** Create intentional skew and observe the Spark UI signature, then fix it correctly.
 
 ### 4a. Create skewed data (one key dominates)
 
@@ -175,7 +177,7 @@ result = df_skewed.groupBy("key").count().collect()
 print(f"Result: {len(result)} unique keys")
 ```
 
-### 4c. Observe the Spark UI for skew
+### 4b. Observe the Spark UI for skew
 
 After running the cell above, go to the Spark UI:
 1. **Stages tab** — Click the groupBy stage. Look at the "Duration" column.
@@ -198,23 +200,37 @@ print("With AQE: skewed partition may be split automatically")
 
 ### 4d. Fix with manual salting
 
+Salting a `groupBy` (rather than a join) works differently from the join-salting pattern in Day 3: you group by the **salted** key first to spread the skewed key's rows across `n_salt` partial aggregations, then re-aggregate those partial results back down to the original key.
+
 ```python
-from pyspark.sql.functions import expr, rand
+from pyspark.sql.functions import expr, rand, sum as spark_sum
 
 # Salt the skewed table
 n_salt = 10
-df_salted = df_skewed.withColumn("salt", (rand() * n_salt).cast("int"))
-df_salted = df_salted.withColumn("key_salted", expr("concat(key, '-', salt)"))
+df_salted = (
+    df_skewed
+    .withColumn("salt", (rand() * n_salt).cast("int"))
+    .withColumn("key_salted", expr("concat(key, '-', salt)"))
+)
 
-# Group by salted key
-result_salted = df_salted.groupBy("key_salted").count().collect()
-print(f"Salted result: {len(result_salted)} rows (one per salt)")
+# Step 1: aggregate by the SALTED key first — this is the DataFrame that
+# actually has a "count" column, and its rows are now spread across up to
+# n_salt separate partitions instead of one
+salted_counts = df_salted.groupBy("key", "key_salted").count()
+print(f"Salted intermediate result: {salted_counts.count()} rows (up to {n_salt} rows per original key)")
 
-# Aggregate back to original key
-from pyspark.sql.functions import sum as spark_sum
-final = df_salted.groupBy("key").agg(spark_sum("count").alias("total_count")).collect()
-print(f"Final aggregated: {final[:3]}")
+# Step 2: re-aggregate the partial salted counts back down to the original key
+final = salted_counts.groupBy("key").agg(spark_sum("count").alias("total_count"))
+final_result = final.orderBy("key").collect()
+print(f"Final aggregated: {final_result[:3]}")
+
+# Sanity check: totals must match the unsalted result exactly
+unsalted_totals = {row["key"]: row["count"] for row in df_skewed.groupBy("key").count().collect()}
+salted_totals = {row["key"]: row["total_count"] for row in final_result}
+print(f"Totals match unsalted result: {unsalted_totals == salted_totals}")
 ```
+
+**Exam trap:** it's tempting to reuse the original ungrouped DataFrame (`df_salted`) for the second aggregation step — but `df_salted` never has a `"count"` column; only the intermediate DataFrame produced by the first `groupBy(...).count()` does. Always aggregate from that intermediate result, not the pre-aggregation DataFrame — and always sanity-check the salted totals against the unsalted totals while developing this pattern, since a wiring mistake here fails silently (wrong numbers, no error) rather than raising an exception.
 
 ---
 
@@ -225,17 +241,13 @@ print(f"Final aggregated: {final[:3]}")
 ### 5a. List active executors
 
 ```python
-# Get executor info from SparkContext
-sc = spark.sparkContext
-executors = sc._jsc.sc().statusTracker().getActiveExecutorIds()
-print(f"Active executor IDs: {executors}")
+# Get executor info via the public, documented StatusTracker API
+status_tracker = spark.sparkContext.statusTracker()
+executor_infos = status_tracker.getExecutorInfos()
 
-# Get detailed executor info
-executor_info = sc._jsc.sc().getExecutorMemoryStatus()
-print(f"Number of executors: {len(executor_info)}")
-
-for i, info in enumerate(executor_info):
-    print(f"Executor {i}: {info}")
+print(f"Number of executors reporting (includes driver in local mode): {len(executor_infos)}")
+for info in executor_infos:
+    print(f"Executor ID: {info.executorId}, Host: {info.host}, Cores: {info.totalCores}")
 ```
 
 ### 5b. Inspect cluster configuration
@@ -243,6 +255,7 @@ for i, info in enumerate(executor_info):
 ```python
 # Read Spark configuration
 print("=== Spark Configuration ===")
+sc = spark.sparkContext
 print(f"Default parallelism: {sc.defaultParallelism}")
 print(f"Executor cores: {sc._conf.get('spark.executor.cores')}")
 print(f"Executor memory: {sc._conf.get('spark.executor.memory')}")
@@ -308,8 +321,8 @@ print(f"After coalesce(100) on 20-partition DF: {df_noop.rdd.getNumPartitions()}
 - [ ] Demonstrated executor OOM patterns (cache, partition size)
 - [ ] Created intentional data skew and observed one slow task
 - [ ] Applied AQE skew join fix
-- [ ] Applied manual salted join fix
-- [ ] Listed active executors and inspected configuration
+- [ ] Applied manual salted groupBy fix and sanity-checked totals against the unsalted result
+- [ ] Listed active executors via the real StatusTracker API and inspected configuration
 - [ ] Verified partition-to-task mapping across narrow and wide transformations
 - [ ] Confirmed coalesce cannot increase partition count
 
@@ -317,6 +330,7 @@ print(f"After coalesce(100) on 20-partition DF: {df_noop.rdd.getNumPartitions()}
 
 ## Cross-References
 
+- **Day 3:** The salted-*join* pattern (different mechanics from salted-*groupBy* here — join-side salting must replicate the small table across every salt value; groupBy-side salting re-aggregates partial counts back to the original key).
 - **Day 5:** DAG formation, lazy evaluation, and physical plan construction
 - **Day 6:** What exactly happens during the shuffle between Stages
 - **Day 7:** Executor memory regions, GC, and spill behavior

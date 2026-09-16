@@ -1,5 +1,7 @@
 # Day 3 — SQL Transformations, Advanced Operations, and Testing
 
+> ⚠️ **Correction notice:** This version fixes several issues found in an earlier draft: (1) the salted-join code was logically broken — the "salted" small table used invented placeholder keys (`"key-0"`...`"key-9"`) with no relationship to the actual join column, so the join could never match real data; (2) the "7-day moving average" window used `ROWS BETWEEN 7 PRECEDING AND CURRENT ROW`, which is actually an 8-row window (7 preceding + current), mismatching its own `ma_7` alias; (3) the RANGE-frame comment was clarified to describe what the frame actually accumulates. A note on Catalyst's automatic predicate pushdown was also added to the join-ordering section for accuracy.
+
 ## Exam Objectives (Exam Guide, July 2026)
 
 Maps to **Section 1 (22%)** and **Section 3 (10%)**:
@@ -35,7 +37,9 @@ SUM(amount) OVER (
     ROWS BETWEEN 3 PRECEDING AND CURRENT ROW
 ) AS rolling_sum_4_rows
 
--- RANGE: all rows with same ORDER BY value as current row
+-- RANGE: cumulative sum, but every row sharing the current row's ORDER BY value
+-- is included together in the same frame — not just rows up to the current
+-- physical position
 SUM(amount) OVER (
     PARTITION BY customer_id ORDER BY order_date
     RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
@@ -95,10 +99,10 @@ LAST_VALUE(salary) OVER (
 ### Aggregate Functions in Windows
 
 ```sql
--- Moving average (7-day)
+-- 7-day moving average: 6 PRECEDING + CURRENT ROW = 7 rows total
 AVG(revenue) OVER (
     PARTITION BY product ORDER BY date
-    ROWS BETWEEN 7 PRECEDING AND CURRENT ROW
+    ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
 ) as ma_7
 
 -- Running count
@@ -107,6 +111,8 @@ COUNT(*) OVER (
     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
 ) as event_sequence
 ```
+
+**Exam trap:** `ROWS BETWEEN N PRECEDING AND CURRENT ROW` spans **N + 1** rows total (the N preceding rows, plus the current row). A "5-day moving average" needs `4 PRECEDING`, not `5 PRECEDING` — an off-by-one error here is a classic exam distractor.
 
 ---
 
@@ -157,24 +163,36 @@ Threshold: `spark.sql.autoBroadcastJoinThreshold` (default 10MB).
 
 ### Skewed Joins — Salted Join Pattern
 
-When one key has vastly more rows than others (skew):
+When one key has vastly more rows than others (skew), the goal is to spread the skewed key's rows across multiple partitions instead of letting them all land on one. This requires salting **both** sides consistently:
 
 ```python
-from pyspark.sql.functions import expr, rand
+from pyspark.sql.functions import rand, explode, array, lit, concat, col
 
-# Salt the large table
+# 1. Salt the large (skewed) table: assign each row a random salt bucket
 n_salt = 10
-df_large_salted = df_large     .withColumn("salt", (rand() * n_salt).cast("int"))     .withColumn("join_key", expr("concat(join_key, '-', salt)"))
+df_large_salted = (
+    df_large
+    .withColumn("salt", (rand() * n_salt).cast("int"))
+    .withColumn("join_key_salted", concat(col("join_key"), lit("-"), col("salt")))
+)
 
-# Add salt to small table
-salted_keys = [(f"key-{i}",) for i in range(n_salt)]
-df_small_salted = spark.createDataFrame(salted_keys, ["join_key"])
+# 2. Replicate EVERY row of the small table across all n_salt buckets, so that
+#    whichever salt value a given large-table row was randomly assigned, there
+#    is a matching row waiting for it on the small side
+df_small_salted = (
+    df_small
+    .withColumn("salt", explode(array([lit(i) for i in range(n_salt)])))
+    .withColumn("join_key_salted", concat(col("join_key"), lit("-"), col("salt")))
+)
 
-# Join
-result = df_large_salted.join(df_small_salted, "join_key")
+# 3. Join on the salted key — the skewed key's rows are now spread across
+#    n_salt partitions instead of all landing on one
+result = df_large_salted.join(df_small_salted, "join_key_salted")
 ```
 
-Spark 3.x AQE handles skew automatically: `spark.sql.adaptive.skewJoin.enabled` (default: true).
+**Exam trap:** The small side must be **exploded/replicated across every salt value**, keeping its real join key intact. Salting only the large side (or inventing placeholder keys on the small side unrelated to real data) silently breaks the join — rows that should match will find no partner, and the join effectively returns nothing for the salted key.
+
+Spark 3.x AQE handles skew automatically: `spark.sql.adaptive.skewJoin.enabled` (default: true). Manual salting is the fallback when AQE is disabled or its thresholds don't catch a particularly extreme skew (see Day 6/8 for the AQE-first decision process).
 
 ### Join Ordering
 
@@ -188,6 +206,8 @@ SELECT * FROM large JOIN small ON ... WHERE small.category = 'active'
 WITH filtered AS (SELECT * FROM small WHERE category = 'active')
 SELECT * FROM large JOIN filtered ON large.key = filtered.key
 ```
+
+**Note:** Catalyst's optimizer will often push a simple, deterministic filter below a join automatically (predicate pushdown) — so the "bad" and "good" versions above may compile to the same physical plan for straightforward filters. The explicit filter-first pattern matters most when the filter *can't* be pushed down automatically (e.g., it depends on a non-deterministic expression or a UDF) — in those cases, writing it explicitly, as shown, is the only way to guarantee early filtering.
 
 ---
 
@@ -260,15 +280,22 @@ result = (
 ```python
 from pyspark.testing import assertDataFrameEqual, assertSchemaEqual
 
-# Order-independent data comparison
-expected = spark.createDataFrame([("Alice",30),("Bob",25)], ["name","age"])
-assertDataFrameEqual(actual.orderBy("name"), expected)
+# Rows in a different order still pass — checkRowOrder defaults to False
+actual = spark.createDataFrame([("Bob", 25), ("Alice", 30)], ["name", "age"])
+expected = spark.createDataFrame([("Alice", 30), ("Bob", 25)], ["name", "age"])
+assertDataFrameEqual(actual, expected)  # PASSES — row order is not checked by default
+
+# Force order-sensitivity explicitly when row order genuinely matters
+# (e.g., verifying a window function's rank ordering was preserved)
+assertDataFrameEqual(actual, expected, checkRowOrder=True)  # FAILS — order now matters
 
 # Schema comparison
 assertSchemaEqual(actual, "name STRING, age INT")
 ```
 
-Behaviors: order-independent by default, does not compare metadata (nullability, comments), raises AssertionError with diff on mismatch.
+**Behaviors (verified against current PySpark docs):** `checkRowOrder` defaults to **`False`**, so `assertDataFrameEqual` is **order-independent by default** — you only need to pass `checkRowOrder=True` on the rare occasions row order itself is part of what you're testing. It does not compare nullability by default (`ignoreNullable=True`), and raises a `PySparkAssertionError` with a `difflib`-style diff on mismatch.
+
+**Exam trap:** Don't memorize this backwards — the default behavior is order-independent. `checkRowOrder=True` is what you add to make comparisons order-sensitive, not the other way around.
 
 ### Unit Testing Pattern
 
@@ -305,7 +332,7 @@ def test_full_pipeline(spark, tmp_path):
     
     result = run_pipeline(spark, test_path)
     expected = spark.createDataFrame([("BOB", 100)], ["name","amount"])
-    assertDataFrameEqual(result.orderBy("name"), expected)
+    assertDataFrameEqual(result, expected)  # row order doesn't matter here either
 ```
 
 ### Built-in Debugger
@@ -317,7 +344,7 @@ Databricks: click the line number gutter to set breakpoints, click Debug (bug ic
 ## Cross-References
 
 - Day 5: Wide vs narrow transformations — groupBy creates shuffle boundaries
-- Day 6: Shuffle read/write during joins
+- Day 6: Shuffle read/write during joins; the AQE-first vs. manual-salting decision process
 - Day 8: Identifying inefficient join strategies via Query Profile
 - Day 15: Control flow operators in Lakeflow pipelines
 - Day 17: Quarantine patterns and data quality validation
