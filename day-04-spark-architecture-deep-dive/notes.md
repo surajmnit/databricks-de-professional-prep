@@ -1,12 +1,10 @@
 # Day 4 — Spark Architecture Deep-Dive
 
-> ⚠️ **Correction notice:** This version fixes one issue found in an earlier draft: the Cluster Manager table incorrectly associated Azure HDInsight (an unrelated Azure big-data service, not part of Databricks) with Databricks, and implied GCP Databricks specifically uses Kubernetes as an exam-testable fact. Both are corrected below, consistent with the same fix already applied in Day 1.
-
 ## Exam Objectives
 
-This day is the foundation for **Section 6: Cost & Performance Optimization (13%)** and **Section 5: Monitoring and Alerting (10%)**.
+This day is the foundation for **Section 6: Cost & Performance Optimization** and **Section 5: Monitoring and Alerting** of the Databricks Data Engineer Professional exam. (Check the current official exam guide for exact section names and weights, since they get revised.)
 
-The exam expects you to reason from first principles about why driver OOM vs executor OOM occurs, what a specific Spark UI metric means in context, and why a configuration causes a specific failure pattern.
+The exam expects you to reason from first principles about why a driver OOM differs from an executor OOM, what a specific Spark UI metric means in context, and why a configuration causes a specific failure pattern.
 
 Day 4 focuses on architecture (how Spark is structured). Days 5-8 drill into execution, shuffle, memory, and monitoring.
 
@@ -16,7 +14,7 @@ Day 4 focuses on architecture (how Spark is structured). Days 5-8 drill into exe
 
 ### Layer-by-Layer Anatomy
 
-**1. User Code (Driver JVM)**
+**1. User Code**
 ```python
 result = (spark.read.parquet('/data/')
     .filter(F.col('status') == 'active')
@@ -24,41 +22,50 @@ result = (spark.read.parquet('/data/')
     .count()
     .collect())
 ```
-Python/SQL code running in the driver JVM.
+- In **PySpark**, your Python code runs in a **Python process** on the driver node. It talks to the driver **JVM** through **Py4J**. DataFrame/SQL operations are executed by the JVM; Python code only runs on the JVM's behalf via Py4J calls.
+- Python **UDFs** are the exception: they run in separate **Python worker processes on the executors**, with data moving between JVM and Python (Arrow/pickle serialization).
+- Scala/Java code runs directly in the driver JVM.
 
-**2. SparkContext (Driver)**
-The entry point. It:
-- Serializes user code and sends it to the Cluster Manager
-- Builds the DAG of transformations
+**2. Driver (SparkContext / SparkSession)**
+The entry point and coordinator of the application. It:
+- Turns your DataFrame/SQL code into a plan (Catalyst builds the logical -> optimized -> physical plan)
+- Builds the RDD lineage and the **stage DAG** (DAGScheduler splits it at shuffle boundaries)
 - Requests executors from the Cluster Manager
-- Coordinates task scheduling
-- Hosts the Spark UI at driver:4040
+- Schedules tasks (TaskScheduler) and **sends them directly to executors**
+- Tracks task status, retries failures, and collects results of actions
+- Hosts the Spark UI (default port 4040 in OSS; on Databricks, reach it through the cluster/compute UI)
 
 **3. Cluster Manager**
-Allocates containers for executors on cluster nodes. **On Databricks, this is fully abstracted away** — you choose a cloud (AWS/Azure/GCP) and node type, and Databricks provisions and manages the underlying driver/executor containers itself. You never configure or select a specific OSS cluster manager (Standalone/YARN/Kubernetes/Mesos) on Databricks, and there is no reliable one-to-one mapping between a given cloud and a specific OSS cluster manager exposed to you.
+Only **allocates resources** (containers/nodes for executors). It does not receive your code and does not schedule tasks.
 
-**Exam trap:** don't assume "GCP Databricks uses Kubernetes" as an exam-testable fact, and don't confuse unrelated products — Azure HDInsight is a separate Azure big-data service, not part of Databricks at all. The exam tests your understanding of **Spark execution behavior** (Driver/Executor/Stage/Task, memory, shuffle), not which literal cluster-manager daemon runs underneath Databricks' compute layer.
+**On Databricks, this is fully abstracted away** — you choose a cloud (AWS/Azure/GCP), node types, and autoscaling limits, and Databricks provisions and manages the driver/executor machines itself. You never configure or select an OSS cluster manager (Standalone/YARN/Kubernetes/Mesos) on Databricks.
+
+**Exam trap:** the exam tests **Spark execution behavior** (Driver/Executor/Stage/Task, memory, shuffle, skew), not which cluster-manager daemon runs underneath Databricks. Don't confuse unrelated products (e.g. Azure HDInsight is a separate Azure service, not part of Databricks).
 
 **4. Executors (Worker Nodes)**
-Each executor is a JVM that:
-- Receives serialized task bytecode from the driver
-- Runs tasks against assigned data partitions
-- Stores results in memory or disk
-- Reports heartbeat to driver every 10s (default)
+Each executor is a JVM process that:
+- Registers with the driver on startup
+- Receives serialized tasks **from the driver** and runs them against assigned partitions
+- Caches data (storage memory) and holds shuffle data on local disk
+- Sends **heartbeats to the driver** (every 10s by default) reporting liveness and task metrics
+
+**On Databricks**, each worker node typically runs **one executor that uses all of that node's cores**, so you size compute by choosing node type and worker count rather than tuning executor layout.
 
 **5. Data Storage**
-Executors read/write directly from cloud storage (S3/ADLS/GCS). The driver orchestrates but does not touch data (except for collect()).
+Executors read/write directly from cloud storage (S3/ADLS/GCS). The driver plans and coordinates but does not process data, except when you pull results to it (`collect()`, `toPandas()`, broadcast build side, etc.).
 
 ### Data Flow
 
 ```
-User Code (Driver JVM)
-  -> SparkContext builds DAG
-  -> Cluster Manager requests executors
-  -> Executors read/write cloud storage directly
+Your code
+  -> Driver: Catalyst plan -> RDD DAG -> stages (DAGScheduler)
+  -> Driver asks Cluster Manager for executors
+  -> Cluster Manager launches executors; they register with the driver
+  -> Driver (TaskScheduler) sends tasks DIRECTLY to executors
+  -> Executors read/write cloud storage; report status/results to driver
 ```
 
-**Critical insight:** The driver does NOT touch data directly (except for collect()). Executor failures are retried safely. Driver failures crash the application.
+**Critical insight:** Executor failures are recoverable (failed tasks are retried, up to `spark.task.maxFailures`). A driver failure kills the whole application.
 
 ---
 
@@ -66,35 +73,39 @@ User Code (Driver JVM)
 
 ### Jobs
 
-- Created every time an **Action** is called: collect(), count(), write(), take()
-- Each action = one independent Job
-- **Jobs are NOT nested** — multiple actions = multiple independent Jobs
+- A Job is created each time an **Action** runs: `collect()`, `count()`, `write`, `take()`, etc.
+- Jobs are independent, not nested — multiple actions = multiple Jobs.
 
-**Exam trap:** A multi-stage query is ONE Job. The groupBy in the middle creates a new Stage, not a new Job.
+**Exam trap:** a multi-stage query is normally ONE Job. The `groupBy` in the middle creates a new **Stage**, not a new Job.
+
+**Nuance:** one action can occasionally trigger extra jobs, e.g. `sort`/`orderBy` runs a small sampling job to compute range boundaries, and `take(n)` may scan partitions incrementally in several jobs.
 
 ### Stages
 
-A Stage is a set of tasks that can run without a shuffle between them. Stages are delimited by **shuffle boundaries**.
+A Stage is a set of tasks that can run without a shuffle between them. Stages are delimited by **shuffle (wide dependency) boundaries**.
 
 | Operation | New Stage? |
 |---|---|
 | filter() | No (narrow) |
 | withColumn() | No (narrow) |
 | select() | No (narrow) |
-| groupBy().count() | YES (shuffle) |
-| join() | YES (shuffle) |
-| repartition(n) | YES (shuffle) |
-| distinct() | YES (shuffle) |
-| coalesce(n) where n < current | No (narrow) |
-| coalesce(n) where n > current | Returns current (no-op) |
-| sort() | YES (shuffle) |
+| groupBy().agg() | Yes (shuffle) |
+| join() — sort-merge / shuffle-hash | Yes (shuffle) |
+| join() — **broadcast hash join** | **No shuffle** for the broadcast join itself |
+| repartition(n) / repartition(col) | Yes (shuffle) |
+| distinct() | Yes (shuffle) |
+| coalesce(n), n < current | No (narrow) |
+| coalesce(n), n > current | No-op, keeps current count (not an error) |
+| sort() / orderBy() | Yes (range-partitioning shuffle) |
+
+**Note on AQE:** with Adaptive Query Execution, the plan is re-optimized at runtime. It can switch a sort-merge join to a broadcast join, coalesce shuffle partitions, and split skewed partitions. The stage boundaries you predict from the code may differ from what actually runs.
 
 ### Tasks
 
 - Smallest unit of parallel work
-- One Task processes **one Partition**
-- Tasks run in parallel across all available executors
-- Task count = sum of partitions in the current Stage
+- One Task processes **one Partition** of that stage
+- Number of tasks in a stage = number of partitions of the stage's final RDD
+- Tasks run concurrently up to the number of available **slots** (total executor cores); extra tasks queue
 
 ---
 
@@ -102,34 +113,37 @@ A Stage is a set of tasks that can run without a shuffle between them. Stages ar
 
 ### What the Driver Does
 
-1. Initializes SparkContext
-2. Builds the DAG (logical plan)
-3. Requests executors from Cluster Manager
-4. Schedules tasks onto executors
-5. Collects results from final Stage
-6. Hosts Spark UI at driver:4040
+1. Initializes the SparkSession / SparkContext
+2. Plans the query (Catalyst) and builds the stage DAG
+3. Requests executors via the Cluster Manager
+4. Schedules tasks onto executors and tracks them
+5. Receives results of actions (e.g. `collect()`)
+6. Hosts the Spark UI
 
 ### Driver Failure Modes
 
 | Failure Type | Cause | Impact |
 |---|---|---|
-| Driver JVM OOM | collect() of large result; large broadcast; large groupBy output | Application crashes |
-| Driver process killed | OOM Killer, node failure | Application terminates |
-| Driver heartbeat loss | Network partition | CM marks driver as lost |
+| Driver JVM OOM | `collect()`/`toPandas()` of large results; large broadcast build; very many tasks/partitions (task metadata) | Application fails or driver becomes unresponsive |
+| `maxResultSize` exceeded | Total serialized task results larger than `spark.driver.maxResultSize` | Job aborted with a `SparkException` (a config guard, not an OOM) |
+| Driver process killed | OS OOM killer, node failure | Application terminates |
+| Executor lost | No heartbeat from executor within `spark.network.timeout` | Driver marks executor lost and reschedules its tasks |
 
 ### Driver OOM — Common Scenarios
 
 ```python
-# Scenario 1: collect() of large dataset
-result = df.collect()  # Driver holds ALL data in JVM heap
+# Scenario 1: collect() of a large dataset
+result = df.collect()  # Driver holds ALL rows in its heap
 
 # Scenario 2: Broadcasting a large table
-df_large.join(broadcast(df_big), 'key')  # Driver receives broadcast metadata
+# The driver first COLLECTS the entire broadcast table into its own heap,
+# then ships it to executors. A big build side therefore OOMs the driver.
+df_large.join(broadcast(df_big), 'key')
 
-# Scenario 3: Large groupBy result
+# Scenario 3: Large aggregated result pulled to the driver
 df.groupBy('category').agg(collect_list('text_column')).collect()
 
-# Scenario 4: High cardinality groupBy with collect()
+# Scenario 4: High-cardinality groupBy result collected
 df.groupBy('high_cardinality_col').count().collect()
 ```
 
@@ -137,12 +151,16 @@ df.groupBy('high_cardinality_col').count().collect()
 
 | Property | Default | Purpose |
 |---|---|---|
-| spark.driver.memory | Cluster config | Driver JVM heap |
-| spark.driver.maxResultSize | 1GB | Max collect() result size |
-| spark.driver.cores | 1 | Driver core count |
-| spark.driver.memoryOverhead | driverMemory * 0.1, min 384MB | Off-heap memory |
+| spark.driver.memory | Set by cluster/node type on Databricks | Driver JVM heap |
+| spark.driver.maxResultSize | 1g in OSS (Databricks may set a different default) | Cap on total serialized results returned to the driver; exceeding it aborts the job |
+| spark.driver.cores | 1 (OSS) | Driver core count |
+| spark.driver.memoryOverhead | max(driverMemory × 0.10, 384MB) | Non-heap memory (native, Python, etc.) |
 
-**Exam trap:** spark.driver.memory is JVM heap only. Off-heap memory is additional. collect() OOM fix: increase maxResultSize or reduce collected data volume.
+These are launch-time settings. On Databricks, driver sizing mainly comes from choosing the driver node type.
+
+**Exam traps:**
+- `maxResultSize` and driver OOM are **different failures**. Exceeding `maxResultSize` gives an explicit "serialized results ... bigger than spark.driver.maxResultSize" error. A true driver OOM needs a larger driver or less data collected.
+- Raising `maxResultSize` only moves the limit and can make a real OOM **more** likely. The real fix is to not collect large results: aggregate/filter first, or write to storage.
 
 ---
 
@@ -150,51 +168,67 @@ df.groupBy('high_cardinality_col').count().collect()
 
 ### Executor Startup
 
-1. Cluster Manager launches executor JVM on worker node
-2. Executor registers with driver (hostname, cores, memory)
-3. Driver adds executor to registry
+1. Cluster Manager launches the executor JVM on a worker node
+2. Executor registers with the driver (host, cores, memory)
+3. Driver adds it to its executor registry
 4. Executor begins receiving tasks
 
 ### Heartbeat and Timeout
 
-- Heartbeats every `spark.executor.heartbeatInterval` (default 10s)
-- 3 missed heartbeats (30s default) = executor marked as lost
-- Lost tasks rescheduled on other executors
+- Executors send heartbeats to the driver every `spark.executor.heartbeatInterval` (default **10s**)
+- If the driver hears nothing for `spark.network.timeout` (default **120s**), it marks the executor as **lost** and reschedules its tasks
+- `spark.executor.heartbeatInterval` must be significantly smaller than `spark.network.timeout`
 
 | Property | Default |
 |---|---|
 | spark.executor.heartbeatInterval | 10s |
-| spark.task.maxFailures | 4 |
-| spark.stage.maxAttempts | 4 |
+| spark.network.timeout | 120s |
+| spark.task.maxFailures | 4 (task retries before the stage/job fails) |
+| spark.stage.maxConsecutiveAttempts | 4 |
 
 ### Executor OOM — Common Scenarios
 
 ```python
-# Scenario 1: Too few partitions, each too large
-df = spark.read.parquet('/data/')  # 2 partitions for 100GB -> 50GB per partition -> OOM
+# Scenario 1: A few very large partitions
+# Typical causes: too few shuffle partitions for the data volume,
+# an over-aggressive coalesce(), or non-splittable inputs (e.g. large gzip CSV).
+# Parquet reads themselves are split by size, so they rarely produce this alone.
+df.coalesce(2).write...   # 100GB into 2 partitions -> ~50GB per task -> OOM
 
-# Scenario 2: Cache bloat
-df.cache().count()  # All data in storage memory; subsequent ops may OOM
+# Scenario 2: Data skew
+# One key dominates -> one task gets a huge partition while others are tiny
 
-# Scenario 3: Python UDF memory
-# Python subprocess has spark.python.worker.memory (512MB default)
-# Too many Python objects exhausts this -> OOM on Python process, NOT JVM
+# Scenario 3: Heavy per-task memory use
+# Large explodes, wide rows, big collect_list groups, or large broadcast
+# variables deserialized on each executor
+
+# Scenario 4: Python UDF / pandas UDF memory
+# Python workers run outside the JVM heap. Excessive Python memory gets the
+# container killed (governed by memoryOverhead / spark.executor.pyspark.memory).
+# spark.python.worker.memory (512m default) is a SPILL THRESHOLD for
+# Python-side aggregation, not a hard limit.
 ```
+
+### Cache and Memory Pressure
+
+- DataFrame `cache()` defaults to **memory-and-disk**, and storage memory is **evictable**.
+- Cache pressure usually appears as eviction, recomputation, spill, and GC pressure, not as a clean OOM. It can contribute to an OOM when execution memory cannot reclaim enough space.
+- Full memory model (unified memory, storage vs execution, GC, spill) is covered on Day 7.
 
 ### Driver vs Executor OOM — Decision Tree
 
 **Who failed?**
-- Driver failed -> collect(), broadcast, groupBy result size
-- Executor failed -> partition size, cache, Python UDF
+- Driver failed -> `collect()`/`toPandas()`, large broadcast, huge task counts, oversized results
+- Executor failed -> partition size, skew, per-task memory, Python UDF memory
 
 **One executor or all?**
-- One executor at 100%, others idle -> data skew
-- All executors at high memory -> partition count too low OR cache bloat
+- One task/executor much heavier than the rest -> data skew
+- All executors under memory pressure -> partitions too large overall (too few partitions) or memory-heavy operations
 
 **What operation was running?**
-- shuffle write/read -> shuffle partition count, data size
-- Python UDF -> Python worker memory
-- collect() -> driver memory
+- Shuffle read/write -> shuffle partition count, data size, skew
+- Python UDF -> Python worker / container overhead memory
+- `collect()` -> driver memory or `maxResultSize`
 
 ---
 
@@ -202,51 +236,57 @@ df.cache().count()  # All data in storage memory; subsequent ops may OOM
 
 ### Partition Count by Operation
 
-| Operation | Effect on Partitions |
+| Operation | Resulting partitions |
 |---|---|
-| spark.read.parquet(path) | One partition per file (or controlled by maxPartitionBytes) |
-| spark.range(n) | n partitions |
-| spark.createDataFrame(data) | Default parallelism (num cores) or 1 on CE |
-| df.repartition(n) | Exactly n partitions (triggers shuffle) |
-| df.repartition(col) | Partition by column value (shuffle) |
-| df.coalesce(n) where n < current | Reduce to n partitions (no shuffle) |
-| df.coalesce(n) where n > current | Returns current partition count (no-op, NOT an error) |
-| df.groupBy(col).count() | Shuffle uses shuffle partitions (default 200) |
+| spark.read.parquet(path) | Determined by size: files are split/packed based on `spark.sql.files.maxPartitionBytes` (128MB default), `spark.sql.files.openCostInBytes`, and default parallelism. Large files split; small files are packed together. |
+| spark.range(n) | `n` is the **row count**, not the partition count. Partitions default to default parallelism (or set `numPartitions`). |
+| spark.createDataFrame(local_data) | Based on default parallelism (usually total cores) |
+| df.repartition(n) | Exactly n partitions (full shuffle, round-robin) |
+| df.repartition(col) | Hash-partitioned by the column into `spark.sql.shuffle.partitions` partitions. **Not** one partition per value; rows with the same key land together. |
+| df.coalesce(n), n < current | Reduces to n partitions (no full shuffle) |
+| df.coalesce(n), n > current | No-op; keeps current count (not an error) |
+| df.groupBy(col).agg(...) | Output uses `spark.sql.shuffle.partitions` (default 200), subject to AQE coalescing |
 
-### Default Parallelism
+### Shuffle Partitions
 
-spark.sql.shuffle.partitions (default 200) controls shuffle partition count:
+`spark.sql.shuffle.partitions` (default 200) controls the number of partitions after shuffles:
 ```python
-df.groupBy('key').count()  # Uses 200 shuffle partitions
-spark.conf.set('spark.sql.shuffle.partitions', 400)  # Override
+spark.conf.set('spark.sql.shuffle.partitions', 400)  # SQL confs can be set at runtime
 ```
+With **AQE** enabled (default in recent Spark/Databricks), small shuffle partitions are coalesced at runtime, so the final number may be lower than the configured value.
 
 ### Target Partition Size
 
-- **Target: 128MB-256MB per partition**
-- 1TB dataset at 128MB target = ~8,192 partitions
+- **Target: roughly 128MB-256MB per partition**
+- 1TB at a 128MB target = ~8,192 partitions (1TB = 1,048,576MB)
 
-**Exam trap:** spark.sql.shuffle.partitions only affects shuffles, not initial read. To change read partitioning: spark.sql.files.maxPartitionBytes or repartition() after read.
+**Exam trap:** `spark.sql.shuffle.partitions` affects only shuffles, not the initial read. To change read partitioning, use `spark.sql.files.maxPartitionBytes` or `repartition()` after the read.
 
 ---
 
-## Part 6 — Dynamic Allocation and Executor Concurrency
+## Part 6 — Dynamic Allocation, Autoscaling, and Executor Concurrency
 
-### Dynamic Allocation
+### Dynamic Allocation (OSS Spark)
 
-```python
-spark.conf.set('spark.dynamicAllocation.enabled', True)
-spark.conf.set('spark.dynamicAllocation.minExecutors', 1)
-spark.conf.set('spark.dynamicAllocation.maxExecutors', 10)
-spark.conf.set('spark.dynamicAllocation.initialExecutors', 2)
 ```
+spark.dynamicAllocation.enabled          true
+spark.dynamicAllocation.minExecutors     1
+spark.dynamicAllocation.maxExecutors     10
+spark.dynamicAllocation.initialExecutors 2
+```
+These are **launch-time** settings (set in cluster/spark-submit config). Calling `spark.conf.set(...)` on a running session does not enable dynamic allocation.
 
-### Executor Cores
+**On Databricks**, use **cluster autoscaling** (min/max workers in the compute configuration) rather than configuring Spark dynamic allocation yourself.
 
-spark.executor.cores controls concurrent tasks per executor (default 1):
-- 4-executor cluster with executor.cores=4 = 16 concurrent tasks total
+### Executor Cores and Slots
 
-**Exam trap:** executor.cores does not affect total cluster cores — it controls intra-executor parallelism.
+`spark.executor.cores` sets how many tasks can run concurrently **inside one executor**.
+
+- Total task slots = number of executors × cores per executor
+- Example: 4 executors × 4 cores = 16 concurrent tasks
+- On OSS YARN/Kubernetes the default is 1 core per executor (on Standalone it defaults to all available cores). On Databricks, one executor per worker uses all of the worker's cores.
+
+**Exam trap:** more partitions than slots just means tasks run in waves; more slots than partitions means idle cores.
 
 ---
 
@@ -254,11 +294,14 @@ spark.executor.cores controls concurrent tasks per executor (default 1):
 
 | Scenario | Diagnosis | Fix |
 |---|---|---|
-| One slow task, others fast | Data skew | Salt join, increase partitions, AQE |
-| One executor at 100%, others at 40% | One partition much larger | Repartition by skewed column |
-| Driver connection lost on large job | Driver OOM from collect() | Don't collect large results; write to storage |
-| Works on small data, OOM on large | Partition count too low | Increase shuffle partitions; repartition after read |
-| All executors OOM simultaneously | Cache bloat or all partitions too large | Unpersist; increase partitions; reduce cache level |
+| One slow task, others fast | Data skew | AQE skew-join handling, salting the hot key, broadcast the small side; isolate/handle the hot key |
+| One executor much busier than others | One partition much larger than the rest | Fix the skew (salting/AQE). **Do not** hash-repartition by the skewed column, since that puts all of that key in one partition. Round-robin `repartition(n)` only helps if the imbalance is from uneven partition sizes, not a dominant key. |
+| Driver unresponsive / job fails after a large `collect()` | Driver OOM or `maxResultSize` exceeded | Don't collect large results; aggregate first or write to storage; then size the driver if needed |
+| Works on small data, OOM on large | Partitions too large (too few partitions) | Increase shuffle partitions, `repartition()` after read, lower `maxPartitionBytes`; check for non-splittable input |
+| Many executors spill/fail with memory errors | Partitions too big overall, or memory-heavy operations | Increase partition count; reduce per-task data; right-size memory/node type; check UDF memory |
+| Executor marked lost | No heartbeat within `spark.network.timeout` (long GC pause, node loss, OOM kill) | Investigate GC/memory, node health; check executor logs |
+
+"Increase partitions" helps when partitions are uniformly too large. It does **not** fix skew from a single dominant key.
 
 ---
 
